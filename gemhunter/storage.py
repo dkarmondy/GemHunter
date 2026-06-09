@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 CREATE INDEX IF NOT EXISTS idx_listings_score ON listings(score);
 CREATE INDEX IF NOT EXISTS idx_listings_rejected ON listings(rejected);
-CREATE INDEX IF NOT EXISTS idx_listings_stream ON listings(stream);
 """
 
 
@@ -49,6 +48,9 @@ class Storage:
         self._conn.execute("PRAGMA journal_mode=WAL")   # safe for 24/7 read+write
         self._conn.executescript(SCHEMA)
         self._migrate()
+        # Indexes on migrated columns must come AFTER the migration adds them.
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_listings_stream ON listings(stream)")
         self._conn.commit()
 
     def _migrate(self) -> None:
