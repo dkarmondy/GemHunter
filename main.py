@@ -1,5 +1,4 @@
-def main():
-    print("Hello from GemHunter!")
+from gemhunter.app import main
 
 if __name__ == "__main__":
     main()

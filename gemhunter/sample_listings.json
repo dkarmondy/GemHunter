@@ -1,0 +1,15 @@
+{
+  "Seiko SKX007": [
+    {"item_id": "v1|111|0", "title": "Seiko SKX007 Diver Automatic, box & papers", "price": 210.0, "currency": "USD", "buying_option": "FIXED_PRICE", "url": "https://www.ebay.com/itm/111", "condition": "Pre-owned"},
+    {"item_id": "v1|112|0", "title": "Seiko SKX007 mod, as-is parts/repair", "price": 95.0, "currency": "USD", "buying_option": "AUCTION", "url": "https://www.ebay.com/itm/112", "condition": "Pre-owned"},
+    {"item_id": "v1|113|0", "title": "Seiko SKX007 mint full set", "price": 340.0, "currency": "USD", "buying_option": "FIXED_PRICE", "url": "https://www.ebay.com/itm/113", "condition": "Pre-owned"}
+  ],
+  "Omega Seamaster 300M": [
+    {"item_id": "v1|211|0", "title": "Omega Seamaster 300M 2531.80 James Bond", "price": 2100.0, "currency": "USD", "buying_option": "FIXED_PRICE", "url": "https://www.ebay.com/itm/211", "condition": "Pre-owned"},
+    {"item_id": "v1|212|0", "title": "Omega Seamaster Professional, serviced", "price": 2650.0, "currency": "USD", "buying_option": "FIXED_PRICE", "url": "https://www.ebay.com/itm/212", "condition": "Pre-owned"}
+  ],
+  "Tudor Black Bay 58": [
+    {"item_id": "v1|311|0", "title": "Tudor Black Bay 58 Navy Blue 79030B full set", "price": 2450.0, "currency": "USD", "buying_option": "FIXED_PRICE", "url": "https://www.ebay.com/itm/311", "condition": "Pre-owned"},
+    {"item_id": "v1|312|0", "title": "Tudor Black Bay 58 black, watch only", "price": 2900.0, "currency": "USD", "buying_option": "AUCTION", "url": "https://www.ebay.com/itm/312", "condition": "Pre-owned"}
+  ]
+}

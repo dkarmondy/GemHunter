@@ -1,0 +1,20 @@
+[Unit]
+Description=GemHunter — eBay watch scout
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/GemHunter
+# Keep the DB on the external SSD (NOT the SD card — SD cards wear out from constant writes).
+ExecStart=/home/pi/GemHunter/.venv/bin/python main.py --db /mnt/ssd/gemhunter/gemhunter.db
+# Add --enrich above to pull size/movement aspects (uses getItem quota; well within limits).
+Restart=on-failure
+RestartSec=30
+# Survive the occasional eBay/network hiccup without spamming restarts.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Install]
+WantedBy=multi-user.target

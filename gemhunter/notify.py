@@ -1,0 +1,63 @@
+"""Push alerts to the phone via Pushover. Falls back to console in dry-run."""
+
+from __future__ import annotations
+
+import requests
+
+from .models import Listing
+
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+
+
+class Notifier:
+    def __init__(self, user_key: str = "", api_token: str = ""):
+        self.user_key = user_key
+        self.api_token = api_token
+
+    @property
+    def live(self) -> bool:
+        return bool(self.user_key and self.api_token)
+
+    @staticmethod
+    def _format(listing: Listing) -> tuple[str, str]:
+        kind = "Auction" if listing.is_auction else "Buy It Now"
+        title = f"Gem: {listing.search_name} — ${listing.price:,.0f}"
+        message = f"{listing.title}\n{kind} · ${listing.price:,.0f} {listing.currency}"
+        return title, message
+
+    def send(self, listing: Listing) -> None:
+        title, message = self._format(listing)
+        self._dispatch(title, message, listing.url)
+
+    MODE_EMOJI = {"project": "🔧", "wishlist": "🎯", "undervalued": "📉"}
+
+    def send_scored(self, result) -> None:
+        """Alert from a Score: shows mode, score, price, reasons, seller."""
+        l = result.listing
+        emoji = self.MODE_EMOJI.get(result.mode, "•")
+        kind = "Auction" if l.is_auction else "BIN"
+        bid = f" · {l.bid_count} bids" if l.is_auction and l.bid_count else ""
+        title = f"{emoji} {l.search_name} — ${l.price:,.0f} ({kind}{bid})"
+        seller = (f"\nseller {l.seller_feedback_pct:.0f}% ({l.seller_feedback_score})"
+                  if l.seller_feedback_pct else "")
+        message = (f"{l.title}\n"
+                   f"score {result.score:.0f} [{result.mode}] · "
+                   f"{', '.join(result.reasons)}{seller}")
+        self._dispatch(title, message, l.url)
+
+    def _dispatch(self, title: str, message: str, url: str) -> None:
+        if not self.live:
+            print(f"[ALERT] {title}\n    {message}\n    {url}")
+            return
+        requests.post(
+            PUSHOVER_URL,
+            data={
+                "token": self.api_token,
+                "user": self.user_key,
+                "title": title,
+                "message": message,
+                "url": url,
+                "url_title": "View on eBay",
+            },
+            timeout=30,
+        ).raise_for_status()

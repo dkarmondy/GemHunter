@@ -1,0 +1,20 @@
+# Copy to config.yaml and edit. Searches = wide-net trawls; the scorer ranks the catch.
+# In Phase 2 this stays a local file; a phone-editable Google Sheet is a parked future phase.
+poll_interval_seconds: 1800      # 30 min (auctions run ~7 days)
+marketplace: EBAY_US
+min_score: 4                     # only alert candidates scoring >= this
+alert_limit: 25                  # max alerts per cycle
+enrich: true                     # fetch item specifics (size/movement/box-papers) per candidate
+
+# Searches are auto-constrained to the Wristwatches category (31387).
+# condition_ids: 3000 = Used, 7000 = For parts / not working.
+searches:
+  - name: "Chronograph — auctions"
+    query: "chronograph watch"
+    buying_options: [AUCTION]
+    condition_ids: [3000, 7000]
+
+  - name: "Vintage chronograph"
+    query: "vintage chronograph"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
