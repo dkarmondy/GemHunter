@@ -18,7 +18,10 @@ except Exception:                            # py<3.9 or missing tzdata
 
 def _now_str() -> str:
     now = datetime.now(MOUNTAIN) if MOUNTAIN else datetime.now().astimezone()
-    return now.strftime("%Y-%m-%d %H:%M %Z")
+    hour12 = now.hour % 12 or 12
+    ampm = "AM" if now.hour < 12 else "PM"
+    # Built manually (no %-m/%I) so it's the same on Windows and the Pi.
+    return f"{now.month}/{now.day}/{now.year} {hour12}:{now.minute:02d} {ampm} {now.strftime('%Z')}"
 
 STREAMS = [
     ("repair", "🔧 For parts / repair", "#b45309"),
