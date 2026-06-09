@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import html
-import time
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
 from .storage import Storage
+
+try:
+    from zoneinfo import ZoneInfo
+    MOUNTAIN = ZoneInfo("America/Denver")   # auto-handles MST/MDT
+except Exception:                            # py<3.9 or missing tzdata
+    MOUNTAIN = None
+
+
+def _now_str() -> str:
+    now = datetime.now(MOUNTAIN) if MOUNTAIN else datetime.now().astimezone()
+    return now.strftime("%Y-%m-%d %H:%M %Z")
 
 STREAMS = [
     ("repair", "🔧 For parts / repair", "#b45309"),
@@ -38,7 +49,7 @@ def _card(r: dict, color: str) -> str:
 def write_report(db_path: str, out_path: str = "gems.html",
                  min_score: float = 0.0, limit: int = 300) -> int:
     s = Storage(db_path)
-    when = time.strftime("%Y-%m-%d %H:%M")
+    when = _now_str()
     sections, total = [], 0
     for stream, title, color in STREAMS:
         rows = s.top_gems(min_score, limit, stream=stream)
