@@ -1,0 +1,15 @@
+[Unit]
+Description=GemHunter web — serves gems.html on :8080
+After=network-online.target
+
+[Service]
+Type=simple
+User=dkarm
+# Serve a dedicated folder (NOT the project dir, which contains .env with secrets).
+# That folder holds only a symlink to the generated gems.html.
+ExecStart=/usr/bin/python3 -m http.server 8080 --directory /home/dkarm/gemhunter-web
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
