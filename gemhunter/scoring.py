@@ -1,12 +1,10 @@
-"""The scorer: gate -> taste -> multiplier, per the playbook scoring philosophy.
+"""The scorer: shared hard gates, then split into two streams:
 
-score_listing(listing) -> Score
-  1. Hard gates (exclusions, region, quartz, disliked caliber, age, seller) -> reject.
-  2. Taste gate (brand / chronograph / valued caliber) -> drop if below threshold,
-     even if it's a steal.
-  3. Multipliers (column-wheel, as-is opportunity, box&papers, grade, size, ...) that
-     only BOOST things which already passed the taste gate.
-Returns a numeric score, a mode tag, and human-readable reasons for the alert.
+  🔧 repair    (Path B) — as-is/for-parts serviceable chronographs you fix.
+  🎯 collector (Path A) — nice complete pieces (box & papers, original, great seller),
+                          incl. grails like Rolex Submariner / Daytona.
+
+score_listing(listing) -> Score(stream, score, mode, reasons, rejected).
 """
 
 from __future__ import annotations
@@ -22,7 +20,8 @@ from .models import Listing
 class Score:
     listing: Listing
     score: float = 0.0
-    mode: str = ""                 # project / wishlist / undervalued
+    stream: str = ""               # "repair" or "collector"
+    mode: str = ""                 # short label for the alert
     reasons: list = field(default_factory=list)
     rejected: bool = False
     reject_reason: str = ""
@@ -43,10 +42,9 @@ def _parse_year(value: str) -> int | None:
 
 
 def _seller_gate(l: Listing):
-    """Return (ok, reason). Lenient when seller data is missing."""
     pct, cnt = l.seller_feedback_pct, l.seller_feedback_score
     if pct <= 0:
-        return True, ""                       # no data -> don't reject on it
+        return True, ""
     if pct < 90:
         return False, f"seller {pct:.0f}% (<90%)"
     if cnt < 20 and pct < 100:
@@ -56,6 +54,30 @@ def _seller_gate(l: Listing):
     if cnt >= 1000 and pct < 95:
         return False, f"seller {pct:.0f}% (<95%)"
     return True, ""
+
+
+def _great_seller(l: Listing) -> bool:
+    return l.seller_feedback_score >= K.GREAT_SELLER_SCORE and \
+        l.seller_feedback_pct >= K.GREAT_SELLER_PCT
+
+
+def _movement_match(t: str, movement_asp: str):
+    cal_hit, cal_pts, is_cw = None, 0, False
+    for kw, (pts, cw) in K.VALUED_CALIBERS.items():
+        if (kw in t or kw in movement_asp) and pts > cal_pts:
+            cal_hit, cal_pts, is_cw = kw.strip(), pts, cw
+    return cal_hit, cal_pts, is_cw
+
+
+def _size_adjust(asp: dict, score: float, reasons: list) -> float:
+    size = _parse_size(asp.get("case size", ""))
+    if size and size >= K.SIZE_MIN:
+        score += K.W_SIZE_OK
+        reasons.append(f"{size:g}mm")
+    elif size and size < K.SIZE_TINY:
+        score += K.W_SIZE_SMALL
+        reasons.append(f"{size:g}mm-small")
+    return score
 
 
 def _reject(r: Score, why: str) -> Score:
@@ -72,49 +94,48 @@ def score_listing(listing: Listing) -> Score:
     features_asp = asp.get("features", "")
     blob = f"{t} {brand_asp} {movement_asp} {features_asp}"
 
-    # ----------------------- HARD GATES -----------------------
+    # ----------------------- HARD GATES (shared) -----------------------
     hit = _first_hit(blob, K.DISLIKED_CALIBERS)
     if hit:
         return _reject(r, f"disliked caliber {hit}")
-
     if not _first_hit(t, K.JAPANESE_EXCEPTIONS):
         hit = _first_hit(f"{t} {brand_asp}",
                          K.JAPANESE_BRANDS + K.RUSSIAN_BRANDS + K.CHINESE_BRANDS)
         if hit:
             return _reject(r, f"excluded region/brand: {hit.strip()}")
-
     hit = _first_hit(f"{t} {brand_asp}", K.EXCLUDE_BRANDS)
     if hit:
         return _reject(r, f"excluded brand: {hit.strip()}")
-
     hit = _first_hit(t, K.EXCLUDE_KEYWORDS)
     if hit:
         return _reject(r, f"excluded: {hit.strip()}")
-
     if _first_hit(t, K.QUARTZ_KEYWORDS) or "quartz" in movement_asp:
         return _reject(r, "quartz")
-    qmodel = _first_hit(t, K.QUARTZ_MODELS)
-    if qmodel and "automatic" not in movement_asp and "mechanical" not in movement_asp:
-        return _reject(r, f"quartz model ({qmodel})")
-
+    qm = _first_hit(t, K.QUARTZ_MODELS)
+    if qm and "automatic" not in movement_asp and "mechanical" not in movement_asp:
+        return _reject(r, f"quartz model ({qm})")
     year = _parse_year(asp.get("year manufactured", "") or asp.get("year", ""))
     if year and year < K.AGE_FLOOR_YEAR:
         return _reject(r, f"pre-{K.AGE_FLOOR_YEAR} ({year})")
-
     ok, why = _seller_gate(listing)
     if not ok:
         return _reject(r, why)
 
-    # ----------------------- TASTE GATE -----------------------
+    # ----------------------- STREAM SELECT -----------------------
+    project = _first_hit(t, K.PROJECT_KEYWORDS)
+    if project:
+        return _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project)
+    return _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp)
+
+
+def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> Score:
+    """Path B — as-is/for-parts serviceable chronographs."""
+    if _first_hit(f"{t} {brand_asp}", K.NO_REPAIR_BRANDS):
+        return _reject(r, "no-repair brand (route to collector)")
     taste, reasons = 0.0, []
     brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
     chrono_hit = _first_hit(f"{t} {features_asp}", K.CHRONO_KEYWORDS)
-
-    cal_hit, cal_pts, is_cw = None, 0, False
-    for kw, (pts, cw) in K.VALUED_CALIBERS.items():
-        if (kw in t or kw in movement_asp) and pts > cal_pts:
-            cal_hit, cal_pts, is_cw = kw.strip(), pts, cw
-
+    cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
     if brand_hit:
         taste += K.W_BRAND
         reasons.append(f"brand:{brand_hit.strip()}")
@@ -124,62 +145,89 @@ def score_listing(listing: Listing) -> Score:
     if cal_hit:
         taste += cal_pts
         reasons.append(f"caliber:{cal_hit}")
-
     if taste < K.TASTE_MIN:
-        return _reject(r, f"below taste gate ({taste:.0f}<{K.TASTE_MIN:.0f})")
+        return _reject(r, f"below taste gate ({taste:.0f})")
 
-    # ----------------------- MULTIPLIERS -----------------------
     score = taste
-
     if is_cw:
         score += K.W_COLUMN_WHEEL
         reasons.append("column-wheel")
-
     grade = next((b for b in K.BRAND_GRADE if b in t), None)
     if grade:
         score += K.BRAND_GRADE[grade]
         reasons.append(f"grade:{grade}")
-
-    proj = _first_hit(t, K.PROJECT_KEYWORDS)
-    if proj:
-        score += K.W_PROJECT
-        reasons.append(f"project:{proj.strip()}")
-
-    box = _first_hit(f"{t} {asp.get('with original box/packaging','')} "
-                     f"{asp.get('with papers','')}", K.POSITIVE_CONDITION)
-    if box or asp.get("with papers") == "yes":
-        score += K.W_BOX_PAPERS
-        reasons.append("box&papers")
-
-    if listing.auth_guarantee:
-        score += K.W_AUTH_GUARANTEE
-        reasons.append("auth-guarantee")
-
-    size = _parse_size(asp.get("case size", ""))
-    if size:
-        if size >= K.SIZE_MIN:
-            score += K.W_SIZE_OK
-            reasons.append(f"{size:g}mm")
-        elif size < K.SIZE_TINY:
-            score += K.W_SIZE_SMALL
-            reasons.append(f"{size:g}mm-small")
-
-    caseback = asp.get("caseback", "") + asp.get("case material", "")
-    if "screw" in caseback or "solid" in caseback or "stainless" in caseback:
-        score += K.W_SOLID_SCREW
-
+    score += K.W_PROJECT
+    reasons.append(f"project:{project.strip()}")
+    score = _size_adjust(asp, score, reasons)
     neg = _first_hit(t, K.NEGATIVE_KEYWORDS)
     if neg:
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    # ----------------------- MODE TAG -----------------------
-    if proj and (cal_hit or chrono_hit):
-        mode = "project"
-    elif brand_hit and not proj:
-        mode = "wishlist"
-    else:
-        mode = "undervalued"
+    r.score, r.stream, r.mode, r.reasons = score, "repair", "🔧 for parts/repair", reasons
+    return r
 
-    r.score, r.mode, r.reasons = score, mode, reasons
+
+def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> Score:
+    """Path A — nice complete pieces; box & papers float to the top."""
+    reasons = []
+    brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
+    model_hit = _first_hit(t, K.COLLECTOR_TARGETS)
+    chrono_hit = _first_hit(f"{t} {features_asp}", K.CHRONO_KEYWORDS)
+    cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
+    if not (brand_hit or model_hit or cal_hit):
+        return _reject(r, "not a collector target")
+
+    taste = 0.0
+    if brand_hit:
+        taste += K.W_TARGET
+        reasons.append(f"brand:{brand_hit.strip()}")
+    if model_hit:
+        taste += K.W_MODEL
+        reasons.append(f"model:{model_hit.strip()}")
+    if chrono_hit:
+        taste += K.W_CHRONO
+        reasons.append("chronograph")
+    if cal_hit:
+        taste += cal_pts
+        reasons.append(f"caliber:{cal_hit}")
+    if taste < K.COLLECTOR_MIN_TASTE:
+        return _reject(r, f"below taste gate ({taste:.0f})")
+
+    score = taste
+    if is_cw:
+        score += K.W_COLUMN_WHEEL
+        reasons.append("column-wheel")
+    grade = next((b for b in K.BRAND_GRADE if b in t), None)
+    if grade:
+        score += K.BRAND_GRADE[grade]
+        reasons.append(f"grade:{grade}")
+
+    # Condition premium — the heart of Path A.
+    fullset = (_first_hit(blob, K.FULLSET_KEYWORDS)
+               or asp.get("with papers") == "yes"
+               or asp.get("with original box/packaging") == "yes")
+    if fullset:
+        score += K.W_FULLSET
+        reasons.append("box&papers")
+    orig = _first_hit(t, K.ORIGINAL_KEYWORDS)
+    if orig:
+        score += K.W_ORIGINAL
+        reasons.append(orig.strip())
+    if "unpolished" not in t and ("polished" in t or "refinished" in t):
+        score += K.W_POLISHED
+        reasons.append("⚠polished")
+    if _great_seller(r.listing):
+        score += K.W_GREAT_SELLER
+        reasons.append("great-seller")
+    if r.listing.auth_guarantee:
+        score += K.W_AUTH_GUARANTEE
+        reasons.append("auth-guarantee")
+    score = _size_adjust(asp, score, reasons)
+    neg = _first_hit(t, K.NEGATIVE_KEYWORDS)
+    if neg:
+        score += K.W_NEGATIVE
+        reasons.append(f"⚠{neg.strip()}")
+
+    r.score, r.stream, r.mode, r.reasons = score, "collector", "🎯 box & papers", reasons
     return r

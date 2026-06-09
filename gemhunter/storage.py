@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS listings (
     url              TEXT,
     image_url        TEXT,
     score            REAL,
+    stream           TEXT,
     mode             TEXT,
     reasons          TEXT,
     rejected         INTEGER DEFAULT 0,
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 CREATE INDEX IF NOT EXISTS idx_listings_score ON listings(score);
 CREATE INDEX IF NOT EXISTS idx_listings_rejected ON listings(rejected);
+CREATE INDEX IF NOT EXISTS idx_listings_stream ON listings(stream);
 """
 
 
@@ -46,7 +48,16 @@ class Storage:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")   # safe for 24/7 read+write
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
+
+    def _migrate(self) -> None:
+        """Add columns to a pre-existing db (e.g. the Pi's) without losing data."""
+        for col, decl in [("stream", "TEXT")]:
+            try:
+                self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     def is_new(self, item_id: str) -> bool:
         cur = self._conn.execute(
@@ -61,22 +72,29 @@ class Storage:
             """INSERT OR REPLACE INTO listings
                (item_id, search_name, title, price, currency, buying_option, bid_count,
                 seller_username, seller_pct, seller_score, condition, url, image_url,
-                score, mode, reasons, rejected, reject_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                score, stream, mode, reasons, rejected, reject_reason, first_seen, last_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT first_seen FROM listings WHERE item_id = ?), ?), ?)""",
             (l.item_id, l.search_name, l.title, l.price, l.currency, l.buying_option,
              l.bid_count, l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
-             l.condition, l.url, l.image_url, result.score, result.mode,
+             l.condition, l.url, l.image_url, result.score, result.stream, result.mode,
              ", ".join(result.reasons), int(result.rejected), result.reject_reason,
              l.item_id, now, now),
         )
         self._conn.commit()
 
-    def top_gems(self, min_score: float = 0.0, limit: int = 200) -> list[dict]:
-        cur = self._conn.execute(
-            """SELECT * FROM listings WHERE rejected = 0 AND score >= ?
-               ORDER BY score DESC, last_seen DESC LIMIT ?""",
-            (min_score, limit))
+    def top_gems(self, min_score: float = 0.0, limit: int = 200,
+                 stream: str | None = None) -> list[dict]:
+        if stream:
+            cur = self._conn.execute(
+                """SELECT * FROM listings WHERE rejected = 0 AND score >= ? AND stream = ?
+                   ORDER BY score DESC, last_seen DESC LIMIT ?""",
+                (min_score, stream, limit))
+        else:
+            cur = self._conn.execute(
+                """SELECT * FROM listings WHERE rejected = 0 AND score >= ?
+                   ORDER BY score DESC, last_seen DESC LIMIT ?""",
+                (min_score, limit))
         return [dict(r) for r in cur.fetchall()]
 
     def stats(self) -> dict:

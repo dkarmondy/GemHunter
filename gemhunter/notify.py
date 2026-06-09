@@ -29,20 +29,16 @@ class Notifier:
         title, message = self._format(listing)
         self._dispatch(title, message, listing.url)
 
-    MODE_EMOJI = {"project": "🔧", "wishlist": "🎯", "undervalued": "📉"}
-
     def send_scored(self, result) -> None:
-        """Alert from a Score: shows mode, score, price, reasons, seller."""
+        """Alert from a Score: shows stream/mode, score, price, reasons, seller."""
         l = result.listing
-        emoji = self.MODE_EMOJI.get(result.mode, "•")
         kind = "Auction" if l.is_auction else "BIN"
         bid = f" · {l.bid_count} bids" if l.is_auction and l.bid_count else ""
-        title = f"{emoji} {l.search_name} — ${l.price:,.0f} ({kind}{bid})"
+        title = f"{result.mode} — ${l.price:,.0f} ({kind}{bid})"
         seller = (f"\nseller {l.seller_feedback_pct:.0f}% ({l.seller_feedback_score})"
                   if l.seller_feedback_pct else "")
         message = (f"{l.title}\n"
-                   f"score {result.score:.0f} [{result.mode}] · "
-                   f"{', '.join(result.reasons)}{seller}")
+                   f"score {result.score:.0f} · {', '.join(result.reasons)}{seller}")
         self._dispatch(title, message, l.url)
 
     def _dispatch(self, title: str, message: str, url: str) -> None:

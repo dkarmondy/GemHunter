@@ -98,3 +98,29 @@ W_NEGATIVE = -5        # rust / water damage / heavily polished
 TASTE_MIN = 3.0        # taste-gate threshold: below this, drop even if a "deal"
 SIZE_MIN = 36.0
 SIZE_TINY = 34.0
+
+# ============================ PATH A: COLLECTOR (nice / box & papers) ============================
+# The "box & papers" stream — full-set, original, unpolished pieces from great sellers.
+# Desired models (beyond TASTE_BRANDS) for this stream, esp. Rolex Sub/Daytona.
+COLLECTOR_TARGETS = [
+    "submariner", "daytona", "gmt-master", "gmt master", "sea-dweller", "sea dweller",
+    "explorer", "datejust", "day-date", "yacht-master", "milgauss", "oyster perpetual",
+    "datograph", "lange 1", "nautilus", "aquanaut", "royal oak", "overseas",
+    "speedmaster", "moonwatch", "navitimer", "el primero", "reverso", "calatrava",
+]
+NO_REPAIR_BRANDS = ["rolex"]   # never a repair project — route to Path A only
+
+FULLSET_KEYWORDS = ["box and papers", "box & papers", "box & paper", "box and paper",
+                    "full set", "complete set", "box papers", "with papers", "b&p"]
+ORIGINAL_KEYWORDS = ["unpolished", "un-polished", "all original", "original dial",
+                     "new old stock", " nos ", "mint", "near mint", "unworn"]
+
+W_TARGET = 3           # desired brand (reuses W_BRAND value)
+W_MODEL = 2            # specific collector model name (Submariner, Daytona, …)
+W_FULLSET = 6          # box & papers / full set — the heart of Path A
+W_ORIGINAL = 3         # unpolished / all original / mint
+W_GREAT_SELLER = 3     # established high-feedback seller
+W_POLISHED = -4        # "polished"/refinished (opposite of what we want here)
+COLLECTOR_MIN_TASTE = 3.0
+GREAT_SELLER_SCORE = 1000
+GREAT_SELLER_PCT = 99.0

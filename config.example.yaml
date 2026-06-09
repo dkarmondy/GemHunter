@@ -18,3 +18,14 @@ searches:
     query: "vintage chronograph"
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000, 7000]
+
+  # ---- Path A: box & papers grails (used only, not for-parts) ----
+  - name: "Rolex Submariner — full set"
+    query: "rolex submariner box papers"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
+
+  - name: "Rolex Daytona — full set"
+    query: "rolex daytona box papers"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
