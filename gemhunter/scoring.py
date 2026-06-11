@@ -100,6 +100,16 @@ def _is_womens_watch(t: str, asp: dict) -> bool:
     return bool(re.search(r"\b(women'?s|lad(y|ies)|girls?|female)\b", t))
 
 
+def _rare_match(t: str, brand_asp: str) -> str | None:
+    hay = f"{t} {brand_asp}"
+    for target in K.RARE_TARGETS:
+        if not any(b in hay for b in target["brand_any"]):
+            continue
+        if any(m in hay for m in target["must_any"]):
+            return target["label"]
+    return None
+
+
 def score_listing(listing: Listing) -> Score:
     r = Score(listing=listing)
     t = (listing.title or "").lower()
@@ -131,12 +141,15 @@ def score_listing(listing: Listing) -> Score:
     qm = _first_hit(t, K.QUARTZ_MODELS)
     if qm and "automatic" not in movement_asp and "mechanical" not in movement_asp:
         return _reject(r, f"quartz model ({qm})")
+    rare_hit = _rare_match(t, brand_asp)
     year = _parse_year(asp.get("year manufactured", "") or asp.get("year", ""))
-    if year and year < K.AGE_FLOOR_YEAR:
+    if year and year < K.AGE_FLOOR_YEAR and not rare_hit:
         return _reject(r, f"pre-{K.AGE_FLOOR_YEAR} ({year})")
     ok, why = _seller_gate(listing)
     if not ok:
         return _reject(r, why)
+    if rare_hit:
+        return _score_rare(r, t, blob, asp, movement_asp, features_asp, brand_asp, rare_hit, year)
 
     # ----------------------- STREAM SELECT -----------------------
     # A project = title says as-is/for-parts, OR eBay condition is "For parts or not working".
@@ -185,6 +198,57 @@ def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> 
         reasons.append(f"⚠{neg.strip()}")
 
     r.score, r.stream, r.mode, r.reasons = score, "repair", "🔧 for parts/repair", reasons
+    return r
+
+
+def _score_rare(r, t, blob, asp, movement_asp, features_asp, brand_asp, rare_hit, year) -> Score:
+    """Rare radar pieces: scarce references to surface immediately."""
+    reasons, score = [f"rare:{rare_hit}"], K.W_RARE_TARGET
+    brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
+    chrono_hit = _is_chrono(f"{t} {features_asp}")
+    cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
+    if brand_hit:
+        score += K.W_TARGET
+        reasons.append(f"brand:{brand_hit.strip()}")
+    if chrono_hit:
+        score += K.W_CHRONO
+        reasons.append("chronograph")
+    if cal_hit:
+        score += cal_pts
+        reasons.append(f"caliber:{cal_hit}")
+        if is_cw:
+            score += K.W_COLUMN_WHEEL
+            reasons.append("column-wheel")
+    grade = next((b for b in K.BRAND_GRADE if b in t), None)
+    if grade:
+        score += K.BRAND_GRADE[grade]
+        reasons.append(f"grade:{grade}")
+    if year and year < K.AGE_FLOOR_YEAR:
+        reasons.append(f"pre-{K.AGE_FLOOR_YEAR}-rare")
+
+    fullset = (_first_hit(blob, K.FULLSET_KEYWORDS)
+               or asp.get("with papers") == "yes"
+               or asp.get("with original box/packaging") == "yes")
+    if fullset:
+        score += K.W_FULLSET
+        reasons.append("box&papers")
+    orig = _first_hit(t, K.ORIGINAL_KEYWORDS)
+    if orig:
+        score += K.W_ORIGINAL
+        reasons.append(orig.strip())
+    if _great_seller(r.listing):
+        score += K.W_GREAT_SELLER
+        reasons.append("great-seller")
+    if r.listing.auth_guarantee:
+        score += K.W_AUTH_GUARANTEE
+        reasons.append("auth-guarantee")
+    score = _size_adjust(asp, score, reasons)
+    neg = _first_hit(t, K.NEGATIVE_KEYWORDS)
+    if neg:
+        score += K.W_NEGATIVE
+        reasons.append(f"⚠{neg.strip()}")
+
+    r.score, r.stream, r.mode, r.reasons = score, "rare", "rare radar", reasons
     return r
 
 

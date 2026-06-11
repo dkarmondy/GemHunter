@@ -62,6 +62,32 @@ searches:
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000, 7000]
 
+  # ---- Rare radar ----
+  - name: "JLC Deep Sea Alarm"
+    query: "jaeger lecoultre deep sea alarm"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "JLC Deep Sea Alarm abbrev"
+    query: "jlc deep sea alarm"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "LeCoultre Deep Sea Alarm"
+    query: "lecoultre deep sea alarm"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "Rolex Kew"
+    query: "rolex kew"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "Rolex Kew Observatory"
+    query: "rolex kew observatory"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "Rolex Observatory Trial"
+    query: "rolex observatory trial"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+
   # ---- Other: non-chrono taste watches (feed the "Other" tab) ----
   - name: "Omega Seamaster"
     query: "omega seamaster"

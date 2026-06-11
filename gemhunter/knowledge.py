@@ -121,6 +121,22 @@ NO_REPAIR_BRANDS = ["rolex"]   # never a repair project — route to Path A only
 # Rolex models that get their own "Box & Papers Rolex" tab (others → Other tab).
 ROLEX_TARGETS = ["submariner", "gmt-master", "gmt master", "daytona"]
 
+# Rare radar: elusive references that should surface on sight even if they are
+# older than the usual serviceability age floor.
+RARE_TARGETS = [
+    {
+        "label": "JLC Deep Sea Alarm",
+        "brand_any": ["jaeger", "lecoultre", "le coultre", "jlc"],
+        "must_any": ["deep sea alarm", "deepsea alarm", "e857"],
+    },
+    {
+        "label": "Rolex Kew Observatory",
+        "brand_any": ["rolex"],
+        "must_any": ["kew", "observatory trial", "observatory"],
+    },
+]
+W_RARE_TARGET = 12
+
 # IWC golden era (~1980–2005, pre-Richemont): own tab. He owns Mark XV, 3706,
 # PD 3701; hunting these refs specifically. Checked only when the brand is IWC.
 IWC_TARGETS = ["big pilot", "iw5002", "5002", "iwc 3713", "iw3713", "3713",

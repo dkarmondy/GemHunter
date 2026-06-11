@@ -39,6 +39,10 @@ COLLECTIONS = [
      "deck": "Calatrava, annual calendar, complications, and grail Patek."},
 ]
 
+RARE_COLLECTION = {"id": "rare", "label": "Rare Watch Radar", "short": "Rare", "icon": "&#9670;", "color": "#fb7185", "min": 10, "limit": 100,
+                   "deck": "Elusive references: JLC Deep Sea Alarm and Rolex Kew Observatory trial watches."}
+STREAMS = COLLECTIONS + [RARE_COLLECTION]
+
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+-]{2,}")
 STOP = {
     "watch", "watches", "mens", "men", "with", "and", "the", "for", "from",
@@ -217,13 +221,17 @@ HTML = r"""<!doctype html>
     <main class="feed" id="savedFeed"></main>
   </section>
   <section id="compsView" class="view"><div class="placeholder"><h2>Comps lab</h2><p>Reserved for Marketplace Insights: sold-price curves, reference medians, and underpriced alerts.</p></div></section>
-  <section id="rareView" class="view"><div class="placeholder"><h2>Rare watch radar</h2><p>Reserved for elusive references you supply: the small list of watches that almost never appear.</p></div></section>
+  <section id="rareView" class="view">
+    <div class="placeholder"><h2>Rare watch radar</h2><p>Elusive references worth seeing on sight: vintage JLC Deep Sea Alarm and Rolex Kew Observatory trial watches.</p></div>
+    <main class="feed" id="rareFeed"></main>
+  </section>
   <section id="catalogView" class="view"><div class="placeholder"><h2>Catalog matches</h2><p>Reserved for Sotheby's and auction-catalog watches: if one appears on eBay, it should light up here.</p></div></section>
 </div>
 <div class="toast" id="toast"></div>
 
 <script>
 const COLLECTIONS = __COLLECTIONS__;
+const RARE_COLLECTION = __RARE_COLLECTION__;
 const MODES = [
   {id:'discover', label:'Discover', icon:'⌁'},
   {id:'saved', label:'Saved', icon:'♥'},
@@ -236,7 +244,7 @@ let active = COLLECTIONS[0].id;
 let items = [];
 let counts = {};
 const $ = id => document.getElementById(id);
-const feed = $('feed'), savedFeed = $('savedFeed'), toast = $('toast');
+const feed = $('feed'), savedFeed = $('savedFeed'), rareFeed = $('rareFeed'), toast = $('toast');
 
 function money(n){ return '$' + Number(n || 0).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function esc(s){ return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -253,6 +261,7 @@ function setMode(next){
   $(`${next}View`)?.classList.add('active');
   if (next === 'discover') loadCollection();
   if (next === 'saved') loadSaved();
+  if (next === 'rare') loadRare();
 }
 function renderRail(){
   $('collectionRail').innerHTML = COLLECTIONS.map(c => `<button class="collection ${c.id===active?'active':''}" style="--accent:${c.color}" onclick="selectCollection('${c.id}')">
@@ -287,6 +296,13 @@ async function loadSaved(){
   const data = await res.json();
   const rows = data.items || [];
   savedFeed.innerHTML = rows.length ? rows.map(r => card(r, '#facc15')).join('') : '<p class="empty">No saved watches yet. Heart a listing to start training your taste model.</p>';
+}
+async function loadRare(){
+  rareFeed.innerHTML = '<p class="empty">Loading rare radar...</p>';
+  const res = await fetch('/api/listings?stream=rare');
+  const data = await res.json();
+  const rows = data.items || [];
+  rareFeed.innerHTML = rows.length ? rows.map(r => card(r, RARE_COLLECTION.color)).join('') : '<p class="empty">No rare-watch matches yet. When a Deep Sea Alarm or Rolex Kew/Observatory listing appears, it will land here.</p>';
 }
 function filters(){
   return {
@@ -410,6 +426,7 @@ def _html() -> bytes:
     return (
         HTML
         .replace("__COLLECTIONS__", json.dumps(COLLECTIONS))
+        .replace("__RARE_COLLECTION__", json.dumps(RARE_COLLECTION))
         .replace("__UPDATED__", _now_str())
     ).encode("utf-8")
 
@@ -445,7 +462,7 @@ class Handler(BaseHTTPRequestHandler):
                 rows = storage.saved_gems()
             else:
                 stream = params.get("stream", ["repair"])[0]
-                cfg = next((c for c in COLLECTIONS if c["id"] == stream), COLLECTIONS[0])
+                cfg = next((c for c in STREAMS if c["id"] == stream), COLLECTIONS[0])
                 rows = storage.top_gems(cfg["min"], cfg["limit"], stream=cfg["id"])
             storage.close()
             self._json(HTTPStatus.OK, {
