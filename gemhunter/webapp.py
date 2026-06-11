@@ -40,7 +40,7 @@ COLLECTIONS = [
 ]
 
 RARE_COLLECTION = {"id": "rare", "label": "Rare Watch Radar", "short": "Rare", "icon": "&#9670;", "color": "#fb7185", "min": 10, "limit": 100,
-                   "deck": "Elusive references: JLC Deep Sea Alarm and Rolex Kew Observatory trial watches."}
+                   "deck": "Elusive references: JLC Deep Sea Alarm, Rolex Kew Observatory, and Movado Tempograf."}
 STREAMS = COLLECTIONS + [RARE_COLLECTION]
 
 TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.+-]{2,}")
@@ -222,7 +222,7 @@ HTML = r"""<!doctype html>
   </section>
   <section id="compsView" class="view"><div class="placeholder"><h2>Comps lab</h2><p>Reserved for Marketplace Insights: sold-price curves, reference medians, and underpriced alerts.</p></div></section>
   <section id="rareView" class="view">
-    <div class="placeholder"><h2>Rare watch radar</h2><p>Elusive references worth seeing on sight: vintage JLC Deep Sea Alarm and Rolex Kew Observatory trial watches.</p></div>
+    <div class="placeholder"><h2>Rare watch radar</h2><p>Elusive references worth seeing on sight: vintage JLC Deep Sea Alarm, Rolex Kew Observatory trial watches, and Movado Tempograf.</p></div>
     <main class="feed" id="rareFeed"></main>
   </section>
   <section id="catalogView" class="view"><div class="placeholder"><h2>Catalog matches</h2><p>Reserved for Sotheby's and auction-catalog watches: if one appears on eBay, it should light up here.</p></div></section>
@@ -302,7 +302,7 @@ async function loadRare(){
   const res = await fetch('/api/listings?stream=rare');
   const data = await res.json();
   const rows = data.items || [];
-  rareFeed.innerHTML = rows.length ? rows.map(r => card(r, RARE_COLLECTION.color)).join('') : '<p class="empty">No rare-watch matches yet. When a Deep Sea Alarm or Rolex Kew/Observatory listing appears, it will land here.</p>';
+  rareFeed.innerHTML = rows.length ? rows.map(r => card(r, RARE_COLLECTION.color)).join('') : '<p class="empty">No rare-watch matches yet. When a Deep Sea Alarm, Rolex Kew/Observatory, or Movado Tempograf listing appears, it will land here.</p>';
 }
 function filters(){
   return {

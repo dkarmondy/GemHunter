@@ -134,6 +134,11 @@ RARE_TARGETS = [
         "brand_any": ["rolex"],
         "must_any": ["kew", "observatory trial", "observatory"],
     },
+    {
+        "label": "Movado Tempograf",
+        "brand_any": ["movado"],
+        "must_any": ["tempograf", "tempo graf", "tempo-graf"],
+    },
 ]
 W_RARE_TARGET = 12
 

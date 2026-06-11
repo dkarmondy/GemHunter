@@ -87,6 +87,14 @@ searches:
     query: "rolex observatory trial"
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000, 7000]
+  - name: "Movado Tempograf"
+    query: "movado tempograf"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "Movado Tempo Graf"
+    query: "movado tempo graf"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
 
   # ---- Other: non-chrono taste watches (feed the "Other" tab) ----
   - name: "Omega Seamaster"
