@@ -68,7 +68,8 @@ class EbayClient:
         params = {
             "q": search.query,
             "filter": self._build_filter(search),
-            "sort": "newlyListed",
+            # default sort = Best Match: the best currently-active listings, so the
+            # browse tabs stay full (not just whatever was posted in the last 30 min).
             "limit": 50,
         }
         category = getattr(search, "category_ids", "") or WRISTWATCH_CATEGORY

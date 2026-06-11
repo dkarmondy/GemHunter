@@ -193,15 +193,18 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
     cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
     is_chrono = bool(chrono_hit or cal_hit)
 
-    # Route to one of three tabs (repair handled earlier).
+    # Route to one of four tabs (repair handled earlier).
+    is_patek = "patek" in f"{t} {brand_asp}"
     if rolex_target:
         stream, mode = "rolex", "🎯 box & papers"
+    elif is_patek:
+        stream, mode = "patek", "👑 patek"
     elif is_chrono:
         stream, mode = "chrono", "⏱ chronograph"
     elif brand_hit or model_hit:
-        stream, mode = "other", "💎 taste"
+        stream, mode = "taste", "💎 taste"
     else:
-        return _reject(r, "not rolex/chrono/taste")
+        return _reject(r, "not rolex/patek/chrono/taste")
 
     reasons, score = [], 0.0
     if brand_hit:

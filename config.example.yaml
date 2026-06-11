@@ -43,8 +43,8 @@ searches:
     query: "jaeger lecoultre"
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000]
-  - name: "Patek Calatrava"
-    query: "patek philippe calatrava"
+  - name: "Patek Philippe"
+    query: "patek philippe"
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000]
   - name: "Cartier Tank"

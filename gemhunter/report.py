@@ -20,8 +20,9 @@ except Exception:                            # py<3.9 or missing tzdata
 STREAMS = [
     ("repair", "🔧 For Parts", "#f59e0b", None, 6),
     ("chrono", "⏱ Chronos", "#3b82f6", None, 10),
-    ("other", "💎 Other", "#a855f7", None, 10),
+    ("taste", "💎 Taste", "#a855f7", None, 10),
     ("rolex", "🎯 Box &amp; Papers Rolex", "#22c55e", 10, 10),
+    ("patek", "👑 Patek", "#eab308", None, 10),
 ]
 
 
