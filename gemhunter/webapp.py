@@ -180,6 +180,7 @@ HTML = r"""<!doctype html>
     .meter span{display:block;color:var(--muted);font-size:10px;font-weight:850;text-transform:uppercase;margin-top:3px}
     .risks{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
     .risk{border:1px solid rgba(251,113,133,.24);background:rgba(251,113,133,.1);color:#fecdd3;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850}
+    .groupNote{border:1px solid rgba(148,163,184,.16);background:rgba(226,237,247,.06);color:#dbe7f5;border-radius:12px;padding:7px 8px;font-size:11px;font-weight:800;margin:6px 0}
     .actionNote{color:#c8d4e6;font-size:12px;line-height:1.25;margin:6px 0 3px}
     .seller{color:var(--muted);font-size:12px}
     .actions{display:flex;gap:8px;margin-top:10px}
@@ -384,6 +385,7 @@ function card(item, color){
   const risks = String(item.risk_tags || '').split(',').map(s => s.trim()).filter(Boolean);
   if (Number(item.relist_count || 1) > 1) risks.unshift(`similar x${Number(item.relist_count)}`);
   const riskHtml = risks.length ? `<div class="risks">${risks.map(r => `<span class="risk">${esc(r)}</span>`).join('')}</div>` : '';
+  const groupNote = item.relist_group_summary ? `<div class="groupNote">${esc(item.relist_group_summary)}</div>` : '';
   const action = item.action_note ? `<div class="actionNote">${esc(item.action_note)}</div>` : '';
   return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
     <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
@@ -393,6 +395,7 @@ function card(item, color){
       <div class="reasons">${esc(item.reasons)}</div>
       <div class="judgment"><div class="meter"><b>${opp}</b><span>Opportunity</span></div><div class="meter"><b>${conf}</b><span>Confidence</span></div></div>
       ${riskHtml}
+      ${groupNote}
       ${action}
       <div class="seller">seller ${seller} · ${esc(item.search_name)}</div>
       <div class="actions">

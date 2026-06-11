@@ -222,7 +222,7 @@ class Storage:
                 f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, limit))
-        return self._with_relist_counts([dict(r) for r in cur.fetchall()])
+        return self._with_relist_groups([dict(r) for r in cur.fetchall()], collapse=True)
 
     def saved_gems(self, limit: int = 300) -> list[dict]:
         cur = self._conn.execute(
@@ -230,22 +230,76 @@ class Storage:
                WHERE rejected = 0 AND saved = 1 AND hidden = 0
                ORDER BY last_seen DESC LIMIT ?""",
             (limit,))
-        return self._with_relist_counts([dict(r) for r in cur.fetchall()])
+        return self._with_relist_groups([dict(r) for r in cur.fetchall()], collapse=False)
+
+    def _with_relist_groups(self, rows: list[dict], collapse: bool = False) -> list[dict]:
+        decorated = [self._decorate_relist_row(dict(row)) for row in rows]
+        if not collapse:
+            return decorated
+        groups: dict[str, dict] = {}
+        order: list[str] = []
+        for row in decorated:
+            key = row.get("fingerprint") or f"item:{row.get('item_id')}"
+            if key not in groups:
+                groups[key] = row
+                order.append(key)
+            elif self._group_rank(row) > self._group_rank(groups[key]):
+                groups[key] = row
+        return [groups[k] for k in order]
+
+    def _group_rank(self, row: dict) -> tuple:
+        score_bucket = int(float(row.get("score") or 0) // 3)
+        return (
+            int(row.get("saved") or 0),
+            score_bucket,
+            -float(row.get("price") or 0),
+            float(row.get("opportunity") or 0),
+            float(row.get("confidence") or 0),
+            float(row.get("score") or 0),
+            float(row.get("last_seen") or 0),
+        )
+
+    def _decorate_relist_row(self, row: dict) -> dict:
+        row["relist_count"] = 1
+        row["relist_min_price"] = row.get("price") or 0
+        row["relist_max_price"] = row.get("price") or 0
+        row["relist_best_confidence"] = row.get("confidence") or 0
+        row["relist_latest_seen"] = row.get("last_seen") or 0
+        row["relist_group_summary"] = ""
+        row["relist_group_item_ids"] = row.get("item_id") or ""
+        row["is_group_representative"] = 0
+        fp = row.get("fingerprint")
+        if not fp:
+            return row
+        summary = self._conn.execute(
+            """SELECT COUNT(DISTINCT item_id) AS n,
+                      MIN(CASE WHEN price > 0 THEN price END) AS min_price,
+                      MAX(price) AS max_price,
+                      MAX(confidence) AS best_confidence,
+                      MAX(last_seen) AS latest_seen,
+                      GROUP_CONCAT(item_id) AS item_ids
+               FROM listings
+               WHERE rejected = 0 AND hidden = 0 AND fingerprint = ?""",
+            (fp,),
+        ).fetchone()
+        n = int(summary["n"] or 1)
+        row["relist_count"] = n
+        row["relist_min_price"] = summary["min_price"] or row.get("price") or 0
+        row["relist_max_price"] = summary["max_price"] or row.get("price") or 0
+        row["relist_best_confidence"] = summary["best_confidence"] or row.get("confidence") or 0
+        row["relist_latest_seen"] = summary["latest_seen"] or row.get("last_seen") or 0
+        row["relist_group_item_ids"] = summary["item_ids"] or row.get("item_id") or ""
+        row["is_group_representative"] = 1 if n > 1 else 0
+        if n > 1:
+            row["relist_group_summary"] = (
+                f"{n} similar listings · cheapest ${row['relist_min_price']:,.0f} · "
+                f"best confidence {row['relist_best_confidence']:.0f}"
+            )
+        return row
 
     def _with_relist_counts(self, rows: list[dict]) -> list[dict]:
-        for row in rows:
-            fp = row.get("fingerprint")
-            if not fp:
-                row["relist_count"] = 1
-                continue
-            relist = self._conn.execute(
-                """SELECT COUNT(DISTINCT item_id) AS n
-                   FROM listings
-                   WHERE fingerprint = ?""",
-                (fp,),
-            ).fetchone()["n"]
-            row["relist_count"] = int(relist or 1)
-        return rows
+        """Backward-compatible alias for older call sites."""
+        return self._with_relist_groups(rows, collapse=False)
 
     def feedback_rows(self, limit: int = 500) -> list[dict]:
         cur = self._conn.execute(
@@ -277,7 +331,7 @@ class Storage:
                     LIMIT ?""",
                 (per_section,),
             ).fetchall()
-            rows = self._with_relist_counts([dict(r) for r in rows])
+            rows = self._with_relist_groups([dict(r) for r in rows], collapse=True)
             if rows:
                 out.append({"id": section_id, "label": label, "items": rows})
         return out
