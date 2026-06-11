@@ -109,6 +109,23 @@ class Storage:
                 (min_score, limit))
         return [dict(r) for r in cur.fetchall()]
 
+    def saved_gems(self, limit: int = 300) -> list[dict]:
+        cur = self._conn.execute(
+            """SELECT * FROM listings
+               WHERE rejected = 0 AND saved = 1 AND hidden = 0
+               ORDER BY last_seen DESC LIMIT ?""",
+            (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
+    def feedback_rows(self, limit: int = 500) -> list[dict]:
+        cur = self._conn.execute(
+            """SELECT item_id, title, search_name, stream, reasons, saved, hidden
+               FROM listings
+               WHERE rejected = 0 AND (saved = 1 OR hidden = 1)
+               ORDER BY last_seen DESC LIMIT ?""",
+            (limit,))
+        return [dict(r) for r in cur.fetchall()]
+
     def set_saved(self, item_id: str, saved: bool) -> bool:
         cur = self._conn.execute(
             "UPDATE listings SET saved = ? WHERE item_id = ?", (int(saved), item_id))
