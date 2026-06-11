@@ -92,7 +92,7 @@ def _html() -> bytes:
     <div class="sub" id="updated">updated {_now_str()}</div>
   </header>
   <nav class="tabs" id="tabs"></nav>
-  <div class="toolbar"><span id="summary">Loading...</span><button class="reload" onclick="loadActive()">Refresh</button></div>
+  <div class="toolbar"><span id="summary">Loading...</span><button class="reload" onclick="hardRefresh()">Refresh</button></div>
   <main class="grid" id="grid"></main>
 </div>
 <div class="toast" id="toast"></div>
@@ -101,6 +101,7 @@ const STREAMS = {stream_json};
 let active = STREAMS[0].id;
 const tabs = document.getElementById('tabs');
 const grid = document.getElementById('grid');
+const appSurface = document.querySelector('.wrap');
 const summary = document.getElementById('summary');
 const toast = document.getElementById('toast');
 
@@ -124,6 +125,7 @@ function selectTab(id) {{
   tabs.querySelector('.tab.active')?.scrollIntoView({{inline:'center', block:'nearest', behavior:'smooth'}});
   loadActive();
 }}
+function hardRefresh() {{ window.location.reload(); }}
 function moveTab(delta) {{
   const next = Math.max(0, Math.min(STREAMS.length - 1, activeIndex() + delta));
   if (next !== activeIndex()) selectTab(STREAMS[next].id);
@@ -177,21 +179,36 @@ async function hideItem(ev, id) {{
   showToast('Hidden');
 }}
 let swipe = null;
-grid.addEventListener('pointerdown', ev => {{
-  if (ev.button !== 0 && ev.pointerType === 'mouse') return;
-  swipe = {{x:ev.clientX, y:ev.clientY, at:Date.now()}};
-}}, {{passive:true}});
-grid.addEventListener('pointerup', ev => {{
+function swipeStart(x, y) {{
+  swipe = {{x, y, at:Date.now()}};
+}}
+function swipeEnd(x, y) {{
   if (!swipe) return;
-  const t = ev;
-  const dx = t.clientX - swipe.x;
-  const dy = t.clientY - swipe.y;
+  const dx = x - swipe.x;
+  const dy = y - swipe.y;
   swipe = null;
   if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
   // User preference: swiping right moves to the next tab (Rolex -> Patek).
   moveTab(dx > 0 ? 1 : -1);
+}}
+appSurface.addEventListener('pointerdown', ev => {{
+  if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+  swipeStart(ev.clientX, ev.clientY);
 }}, {{passive:true}});
-grid.addEventListener('pointercancel', () => {{ swipe = null; }}, {{passive:true}});
+appSurface.addEventListener('pointerup', ev => {{
+  swipeEnd(ev.clientX, ev.clientY);
+}}, {{passive:true}});
+appSurface.addEventListener('pointercancel', () => {{ swipe = null; }}, {{passive:true}});
+appSurface.addEventListener('touchstart', ev => {{
+  if (!ev.changedTouches.length) return;
+  const t = ev.changedTouches[0];
+  swipeStart(t.clientX, t.clientY);
+}}, {{passive:true}});
+appSurface.addEventListener('touchend', ev => {{
+  if (!ev.changedTouches.length) return;
+  const t = ev.changedTouches[0];
+  swipeEnd(t.clientX, t.clientY);
+}}, {{passive:true}});
 document.addEventListener('keydown', ev => {{
   if (ev.key === 'ArrowRight') moveTab(1);
   if (ev.key === 'ArrowLeft') moveTab(-1);
