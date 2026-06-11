@@ -193,18 +193,21 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
     cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
     is_chrono = bool(chrono_hit or cal_hit)
 
-    # Route to one of four tabs (repair handled earlier).
+    # Route to one of five tabs (repair handled earlier).
     is_patek = "patek" in f"{t} {brand_asp}"
+    is_iwc = "iwc" in f"{t} {brand_asp}"
     if rolex_target:
         stream, mode = "rolex", "🎯 box & papers"
     elif is_patek:
         stream, mode = "patek", "👑 patek"
+    elif is_iwc:
+        stream, mode = "iwc", "✈️ iwc golden era"
     elif is_chrono:
         stream, mode = "chrono", "⏱ chronograph"
     elif brand_hit or model_hit:
         stream, mode = "taste", "💎 taste"
     else:
-        return _reject(r, "not rolex/patek/chrono/taste")
+        return _reject(r, "not rolex/patek/iwc/chrono/taste")
 
     reasons, score = [], 0.0
     if brand_hit:
@@ -226,6 +229,17 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
     if grade:
         score += K.BRAND_GRADE[grade]
         reasons.append(f"grade:{grade}")
+
+    if stream == "iwc":
+        tgt = _first_hit(t, K.IWC_TARGETS)
+        if tgt:
+            score += K.W_IWC_TARGET
+            reasons.append(f"era-ref:{tgt.strip()}")
+        yr = _parse_year(asp.get("year manufactured", "") or asp.get("year", "")) \
+            or _parse_year(t)
+        if yr and yr > K.IWC_ERA_END:
+            score += K.W_IWC_MODERN
+            reasons.append(f"⚠modern({yr})")
 
     # Condition premium — pushes box & papers / original pieces to the top.
     fullset = (_first_hit(blob, K.FULLSET_KEYWORDS)

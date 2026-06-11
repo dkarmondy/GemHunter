@@ -31,6 +31,8 @@ COLLECTIONS = [
      "deck": "Mechanical chronographs with movement signal."},
     {"id": "taste", "label": "Taste", "short": "Taste", "icon": "&#128142;", "color": "#a78bfa", "min": 10, "limit": 100,
      "deck": "Non-chrono pieces that fit your collecting lane."},
+    {"id": "iwc", "label": "IWC Golden Era", "short": "IWC", "icon": "&#9992;&#65039;", "color": "#2dd4bf", "min": 10, "limit": 100,
+     "deck": "Pre-Richemont IWC, ~1980–2005: Mark XII, Doppel 3713, Big Pilot 5002, UTC 3251."},
     {"id": "rolex", "label": "Box & Papers Rolex", "short": "Rolex", "icon": "&#127919;", "color": "#34d399", "min": 10, "limit": 10,
      "deck": "Submariner, GMT, and Daytona full-set candidates."},
     {"id": "patek", "label": "Patek", "short": "Patek", "icon": "&#128081;", "color": "#facc15", "min": 10, "limit": 100,

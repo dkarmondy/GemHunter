@@ -118,6 +118,15 @@ NO_REPAIR_BRANDS = ["rolex"]   # never a repair project — route to Path A only
 # Rolex models that get their own "Box & Papers Rolex" tab (others → Other tab).
 ROLEX_TARGETS = ["submariner", "gmt-master", "gmt master", "daytona"]
 
+# IWC golden era (~1980–2005, pre-Richemont): own tab. He owns Mark XV, 3706,
+# PD 3701; hunting these refs specifically. Checked only when the brand is IWC.
+IWC_TARGETS = ["big pilot", "5002", "3713", "doppel", "mark xii", "mark 12",
+               "3241", "9241", "utc", "3251", "mark xv", "3253", "3706",
+               "gst", "aquatimer 3536", "3536", "ingenieur 3521", "porsche design"]
+IWC_ERA_END = 2005             # later than this -> modern, penalize
+W_IWC_TARGET = 6               # must outrank a modern piece with box&papers
+W_IWC_MODERN = -4
+
 FULLSET_KEYWORDS = ["box and papers", "box & papers", "box & paper", "box and paper",
                     "full set", "complete set", "box papers", "with papers", "b&p"]
 ORIGINAL_KEYWORDS = ["unpolished", "un-polished", "all original", "original dial",

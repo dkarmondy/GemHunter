@@ -32,6 +32,24 @@ searches:
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000]
 
+  # ---- IWC golden era (~1980–2005) ----
+  - name: "IWC Big Pilot 5002"
+    query: "iwc big pilot 5002"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "IWC Doppel 3713"
+    query: "iwc 3713"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "IWC Mark XII"
+    query: "iwc mark xii"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+  - name: "IWC UTC 3251"
+    query: "iwc utc"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000, 7000]
+
   # ---- Other: non-chrono taste watches (feed the "Other" tab) ----
   - name: "Omega Seamaster"
     query: "omega seamaster"
