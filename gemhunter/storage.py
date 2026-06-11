@@ -7,9 +7,34 @@ Phase 3 (auction tracking) and the forecaster will grow into.
 
 from __future__ import annotations
 
+import hashlib
+import re
 import sqlite3
 import time
 from pathlib import Path
+
+
+FINGERPRINT_STOP = {
+    "watch", "watches", "mens", "men", "vintage", "rare", "used", "pre", "owned",
+    "with", "and", "the", "for", "from", "box", "papers", "paper", "full", "set",
+    "stainless", "steel", "gold", "automatic", "manual", "working", "running",
+}
+
+
+def _fingerprint_tokens(text: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    useful = [t for t in tokens if len(t) > 2 and t not in FINGERPRINT_STOP]
+    return sorted(useful)[:16]
+
+
+def listing_fingerprint(listing) -> str:
+    """Stable-ish relist key: same seller + canonical title tokens."""
+    seller = (getattr(listing, "seller_username", "") or "").strip().lower()
+    title_tokens = _fingerprint_tokens(getattr(listing, "title", ""))
+    base = f"{seller}|{' '.join(title_tokens)}"
+    if not title_tokens:
+        base = f"{seller}|{getattr(listing, 'title', '')}".lower()
+    return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS listings (
@@ -39,6 +64,7 @@ CREATE TABLE IF NOT EXISTS listings (
     hidden           INTEGER DEFAULT 0,
     saved            INTEGER DEFAULT 0,
     feedback_reason  TEXT,
+    fingerprint      TEXT,
     first_seen       REAL,
     last_seen        REAL
 );
@@ -55,7 +81,8 @@ CREATE TABLE IF NOT EXISTS listing_observations (
     buying_option   TEXT,
     bid_count       INTEGER,
     score           REAL,
-    stream          TEXT
+    stream          TEXT,
+    fingerprint     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_observations_item ON listing_observations(item_id, observed_at);
 
@@ -91,6 +118,8 @@ class Storage:
         # Indexes on migrated columns must come AFTER the migration adds them.
         self._conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_listings_stream ON listings(stream)")
+        self._conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_listings_fingerprint ON listings(fingerprint)")
         self._conn.commit()
 
     def _migrate(self) -> None:
@@ -104,11 +133,33 @@ class Storage:
             ("risk_tags", "TEXT"),
             ("action_note", "TEXT"),
             ("feedback_reason", "TEXT"),
+            ("fingerprint", "TEXT"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        try:
+            self._conn.execute("ALTER TABLE listing_observations ADD COLUMN fingerprint TEXT")
+        except sqlite3.OperationalError:
+            pass
+        self._backfill_fingerprints()
+
+    def _backfill_fingerprints(self) -> None:
+        rows = self._conn.execute(
+            """SELECT item_id, title, seller_username
+               FROM listings
+               WHERE fingerprint IS NULL OR fingerprint = ''"""
+        ).fetchall()
+        for row in rows:
+            listing = type("FingerprintListing", (), {
+                "title": row["title"] or "",
+                "seller_username": row["seller_username"] or "",
+            })()
+            self._conn.execute(
+                "UPDATE listings SET fingerprint = ? WHERE item_id = ?",
+                (listing_fingerprint(listing), row["item_id"]),
+            )
 
     def is_new(self, item_id: str) -> bool:
         cur = self._conn.execute(
@@ -124,9 +175,9 @@ class Storage:
                (item_id, search_name, title, price, currency, buying_option, bid_count,
                 seller_username, seller_pct, seller_score, condition, url, image_url,
                 score, opportunity, confidence, stream, mode, reasons, risk_tags,
-                action_note, rejected, reject_reason, hidden, saved,
+                action_note, rejected, reject_reason, fingerprint, hidden, saved,
                 feedback_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
@@ -138,6 +189,7 @@ class Storage:
              result.stream, result.mode, ", ".join(result.reasons),
              ", ".join(getattr(result, "risk_tags", [])), getattr(result, "action_note", ""),
              int(result.rejected), result.reject_reason,
+             listing_fingerprint(l),
              l.item_id, l.item_id, l.item_id, l.item_id, now, now),
         )
         self.record_observation(l, result)
@@ -148,11 +200,12 @@ class Storage:
         self._conn.execute(
             """INSERT INTO listing_observations
                (item_id, observed_at, search_name, price, currency, buying_option,
-                bid_count, score, stream)
-               VALUES (?,?,?,?,?,?,?,?,?)""",
+                bid_count, score, stream, fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
             (listing.item_id, now, listing.search_name, listing.price, listing.currency,
              listing.buying_option, listing.bid_count,
-             getattr(result, "score", None), getattr(result, "stream", None)),
+             getattr(result, "score", None), getattr(result, "stream", None),
+             listing_fingerprint(listing)),
         )
         self._conn.commit()
 
@@ -169,7 +222,7 @@ class Storage:
                 f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, limit))
-        return [dict(r) for r in cur.fetchall()]
+        return self._with_relist_counts([dict(r) for r in cur.fetchall()])
 
     def saved_gems(self, limit: int = 300) -> list[dict]:
         cur = self._conn.execute(
@@ -177,7 +230,22 @@ class Storage:
                WHERE rejected = 0 AND saved = 1 AND hidden = 0
                ORDER BY last_seen DESC LIMIT ?""",
             (limit,))
-        return [dict(r) for r in cur.fetchall()]
+        return self._with_relist_counts([dict(r) for r in cur.fetchall()])
+
+    def _with_relist_counts(self, rows: list[dict]) -> list[dict]:
+        for row in rows:
+            fp = row.get("fingerprint")
+            if not fp:
+                row["relist_count"] = 1
+                continue
+            relist = self._conn.execute(
+                """SELECT COUNT(DISTINCT item_id) AS n
+                   FROM listings
+                   WHERE fingerprint = ?""",
+                (fp,),
+            ).fetchone()["n"]
+            row["relist_count"] = int(relist or 1)
+        return rows
 
     def feedback_rows(self, limit: int = 500) -> list[dict]:
         cur = self._conn.execute(
@@ -187,6 +255,32 @@ class Storage:
                ORDER BY last_seen DESC LIMIT ?""",
             (limit,))
         return [dict(r) for r in cur.fetchall()]
+
+    def inspect_now(self, per_section: int = 3) -> list[dict]:
+        sections = [
+            ("rare", "Rare radar", "stream = 'rare'", "opportunity DESC, confidence DESC"),
+            ("repair", "Best repair projects", "stream = 'repair'", "opportunity DESC, score DESC"),
+            ("safe", "Safe collector buys",
+             "stream IN ('rolex','patek','iwc','taste') AND confidence >= 70",
+             "opportunity DESC, confidence DESC"),
+            ("chrono", "Chronos worth inspecting", "stream = 'chrono'", "opportunity DESC, score DESC"),
+            ("relist", "Possible relists",
+             "fingerprint IS NOT NULL AND fingerprint IN (SELECT fingerprint FROM listings WHERE fingerprint IS NOT NULL GROUP BY fingerprint HAVING COUNT(DISTINCT item_id) > 1)",
+             "last_seen DESC"),
+        ]
+        out = []
+        for section_id, label, where, ordering in sections:
+            rows = self._conn.execute(
+                f"""SELECT * FROM listings
+                    WHERE rejected = 0 AND hidden = 0 AND {where}
+                    ORDER BY {ordering}
+                    LIMIT ?""",
+                (per_section,),
+            ).fetchall()
+            rows = self._with_relist_counts([dict(r) for r in rows])
+            if rows:
+                out.append({"id": section_id, "label": label, "items": rows})
+        return out
 
     def set_saved(self, item_id: str, saved: bool) -> bool:
         cur = self._conn.execute(

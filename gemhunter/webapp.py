@@ -128,7 +128,7 @@ HTML = r"""<!doctype html>
     .topActions{display:flex;gap:8px;padding-top:4px}
     .iconBtn{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);color:var(--text);
       width:40px;height:40px;border-radius:13px;font-size:18px;font-weight:800}
-    .modeDock{display:grid;grid-template-columns:repeat(5,1fr);gap:7px;margin-top:16px}
+    .modeDock{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:16px}
     .mode{border:1px solid transparent;background:rgba(15,23,42,.62);color:var(--muted);
       border-radius:16px;padding:9px 4px 8px;text-align:center;font-size:11px;font-weight:800}
     .mode .ico{display:block;font-size:18px;line-height:1.1;margin-bottom:2px}
@@ -159,6 +159,8 @@ HTML = r"""<!doctype html>
     .chip{border:1px solid rgba(148,163,184,.18);background:#0b1425;color:var(--soft);border-radius:999px;padding:8px 11px;font-weight:850;font-size:12px}
     .chip.active{background:var(--accent);color:#07111f;border-color:var(--accent)}
     .feed{display:flex;flex-direction:column;gap:12px;touch-action:pan-y;margin-top:12px}
+    .inspectSection{margin-top:14px}
+    .inspectSection h3{font-size:18px;margin:0 0 9px;font-weight:950;color:#f8fafc}
     .card{position:relative;display:grid;grid-template-columns:118px 1fr;gap:13px;background:rgba(16,26,45,.96);
       border:1px solid rgba(148,163,184,.16);border-radius:22px;overflow:hidden;color:inherit;text-decoration:none;box-shadow:0 10px 32px rgba(0,0,0,.18)}
     .card.saved{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 10px 32px rgba(0,0,0,.18)}
@@ -229,6 +231,11 @@ HTML = r"""<!doctype html>
     <main class="feed" id="feed"></main>
   </section>
 
+  <section id="inspectView" class="view">
+    <div class="placeholder"><h2>Inspect now</h2><p>The shortest possible list: rare hits, best repair projects, safe collector buys, chronos, and possible relists.</p></div>
+    <main id="inspectFeed"></main>
+  </section>
+
   <section id="savedView" class="view">
     <div class="placeholder"><h2>Saved watches</h2><p>Your hearted watches live here. Hearts also nudge similar future listings higher in the Discover feed.</p></div>
     <main class="feed" id="savedFeed"></main>
@@ -257,7 +264,7 @@ let active = COLLECTIONS[0].id;
 let items = [];
 let counts = {};
 const $ = id => document.getElementById(id);
-const feed = $('feed'), savedFeed = $('savedFeed'), rareFeed = $('rareFeed'), toast = $('toast');
+const feed = $('feed'), inspectFeed = $('inspectFeed'), savedFeed = $('savedFeed'), rareFeed = $('rareFeed'), toast = $('toast');
 
 function money(n){ return '$' + Number(n || 0).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function esc(s){ return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -266,6 +273,7 @@ function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); s
 function hardRefresh(){ window.location.href = window.location.pathname + '?v=' + Date.now(); }
 
 function renderModeDock(){
+  if (!MODES.some(m => m.id === 'inspect')) MODES.unshift({id:'inspect', label:'Inspect', icon:'!'});
   $('modeDock').innerHTML = MODES.map(m => `<button class="mode ${m.id===mode?'active':''}" onclick="setMode('${m.id}')"><span class="ico">${m.icon}</span>${m.label}</button>`).join('');
 }
 function installSortOptions(){
@@ -277,6 +285,7 @@ function setMode(next){
   mode = next; renderModeDock();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
   $(`${next}View`)?.classList.add('active');
+  if (next === 'inspect') loadInspect();
   if (next === 'discover') loadCollection();
   if (next === 'saved') loadSaved();
   if (next === 'rare') loadRare();
@@ -314,6 +323,17 @@ async function loadSaved(){
   const data = await res.json();
   const rows = data.items || [];
   savedFeed.innerHTML = rows.length ? rows.map(r => card(r, '#facc15')).join('') : '<p class="empty">No saved watches yet. Heart a listing to start training your taste model.</p>';
+}
+async function loadInspect(){
+  inspectFeed.innerHTML = '<p class="empty">Loading inspect list...</p>';
+  const res = await fetch('/api/inspect');
+  const data = await res.json();
+  const sections = data.sections || [];
+  inspectFeed.innerHTML = sections.length ? sections.map(section => `
+    <section class="inspectSection">
+      <h3>${esc(section.label)}</h3>
+      <div class="feed">${section.items.map(r => card(r, '#e5edf7')).join('')}</div>
+    </section>`).join('') : '<p class="empty">No inspect-now candidates yet.</p>';
 }
 async function loadRare(){
   rareFeed.innerHTML = '<p class="empty">Loading rare radar...</p>';
@@ -361,6 +381,7 @@ function card(item, color){
   const opp = Math.round(Number(item.opportunity || 0));
   const conf = Math.round(Number(item.confidence || 0));
   const risks = String(item.risk_tags || '').split(',').map(s => s.trim()).filter(Boolean);
+  if (Number(item.relist_count || 1) > 1) risks.unshift(`similar x${Number(item.relist_count)}`);
   const riskHtml = risks.length ? `<div class="risks">${risks.map(r => `<span class="risk">${esc(r)}</span>`).join('')}</div>` : '';
   const action = item.action_note ? `<div class="actionNote">${esc(item.action_note)}</div>` : '';
   return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
@@ -478,6 +499,18 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path in ("/", "/index.html", "/gems.html"):
             self._send(HTTPStatus.OK, _html(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/inspect":
+            storage = Storage(self.db_path)
+            likes, dislikes = _preference_profile(storage.feedback_rows())
+            sections = storage.inspect_now()
+            for section in sections:
+                section["items"] = _apply_learning(section["items"], likes, dislikes)
+            storage.close()
+            self._json(HTTPStatus.OK, {
+                "updated": _now_str(),
+                "sections": sections,
+            })
             return
         if parsed.path == "/api/listings":
             params = parse_qs(parsed.query)
