@@ -39,6 +39,25 @@ CREATE TABLE IF NOT EXISTS listings (
 );
 CREATE INDEX IF NOT EXISTS idx_listings_score ON listings(score);
 CREATE INDEX IF NOT EXISTS idx_listings_rejected ON listings(rejected);
+
+CREATE TABLE IF NOT EXISTS comps (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    source        TEXT,      -- my-purchase | my-sale | bid-history | insights
+    brand         TEXT,
+    model         TEXT,
+    reference     TEXT,
+    caliber       TEXT,
+    title         TEXT,
+    condition     TEXT,      -- e.g. "broken for repair", "used", "NOS"
+    sale_date     TEXT,      -- ISO date when known
+    price         REAL,      -- final/transaction price
+    currency      TEXT DEFAULT 'USD',
+    bid_count     INTEGER,
+    seller        TEXT,
+    url           TEXT,
+    notes         TEXT,
+    UNIQUE(source, title, sale_date, price)
+);
 """
 
 
@@ -142,6 +161,29 @@ class Storage:
         row = self._conn.execute(
             "SELECT * FROM listings WHERE item_id = ?", (item_id,)).fetchone()
         return dict(row) if row else None
+
+    def add_comp(self, **kw) -> bool:
+        """Insert a comp row; returns False if it was a duplicate."""
+        cols = ["source", "brand", "model", "reference", "caliber", "title",
+                "condition", "sale_date", "price", "currency", "bid_count",
+                "seller", "url", "notes"]
+        vals = [kw.get(c) for c in cols]
+        try:
+            self._conn.execute(
+                f"INSERT INTO comps ({','.join(cols)}) VALUES ({','.join('?'*len(cols))})",
+                vals)
+            self._conn.commit()
+            return True
+        except sqlite3.IntegrityError:
+            return False
+
+    def comps(self, brand: str | None = None) -> list[dict]:
+        q = "SELECT * FROM comps"
+        args: tuple = ()
+        if brand:
+            q += " WHERE brand LIKE ?"
+            args = (f"%{brand}%",)
+        return [dict(r) for r in self._conn.execute(q + " ORDER BY sale_date", args)]
 
     def stats(self) -> dict:
         row = self._conn.execute(

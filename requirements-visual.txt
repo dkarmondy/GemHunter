@@ -1,0 +1,6 @@
+# Optional: visual taste scoring (CLIP embeddings via ONNX).
+# Install alongside requirements.txt, then set `visual: true` in config.yaml.
+#   pip install -r requirements-visual.txt
+onnxruntime>=1.17
+pillow>=10.0
+numpy>=1.24

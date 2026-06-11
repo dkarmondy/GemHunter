@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 
-from . import report
+from . import report, visual
 from .config import Config, load_config
 from .ebay import EbayClient, SampleEbayClient
 from .notify import Notifier
@@ -52,6 +52,21 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
         keep = [r for r in keep if not r.rejected and r.score >= cfg.min_score]
 
     keep.sort(key=lambda r: r.score, reverse=True)
+
+    # Optional visual taste bonus: compare listing thumbnail to the anchor set.
+    # A ranking nudge only (max +3), applied to the top candidates.
+    if cfg.visual and keep and visual.is_available():
+        for r in keep[: cfg.alert_limit * 2]:
+            sim = visual.similarity_from_url(r.listing.image_url)
+            b = visual.bonus(sim)
+            if b:
+                r.score += b
+                r.reasons.append(f"looks:{sim:.2f}(+{b:g})")
+        keep.sort(key=lambda r: r.score, reverse=True)
+
+    for r in keep:
+        storage.record_result(r)   # persist final (enriched + visual) scores
+
     alerted = keep[: cfg.alert_limit]
     for r in alerted:
         notifier.send_scored(r)

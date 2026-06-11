@@ -28,6 +28,7 @@ class Config:
     min_score: float = 4.0          # only alert candidates scoring >= this
     alert_limit: int = 25           # max alerts per cycle
     enrich: bool = False            # call getItem on candidates for size/movement/etc.
+    visual: bool = False            # CLIP visual-taste bonus (needs anchors + model)
     # Credentials (empty string => that integration runs in dry-run mode)
     ebay_client_id: str = ""
     ebay_client_secret: str = ""
@@ -61,6 +62,7 @@ def load_config(config_path: str | Path = "config.yaml") -> Config:
         min_score=float(raw.get("min_score", 4.0)),
         alert_limit=int(raw.get("alert_limit", 25)),
         enrich=bool(raw.get("enrich", False)),
+        visual=bool(raw.get("visual", False)),
         ebay_client_id=os.getenv("EBAY_CLIENT_ID", ""),
         ebay_client_secret=os.getenv("EBAY_CLIENT_SECRET", ""),
         pushover_user_key=os.getenv("PUSHOVER_USER_KEY", ""),

@@ -5,6 +5,8 @@ marketplace: EBAY_US
 min_score: 6                     # floor for keep/alert; report applies per-section bars (repair 6, Rolex/chrono 10)
 alert_limit: 25                  # max alerts per cycle
 enrich: true                     # fetch item specifics (size/movement/box-papers) per candidate
+visual: false                    # CLIP visual-taste bonus; needs requirements-visual.txt,
+                                 # the model download, and data/taste_anchors.npz
 
 # Searches are auto-constrained to the Wristwatches category (31387).
 # condition_ids: 3000 = Used, 7000 = For parts / not working.
