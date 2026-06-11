@@ -17,6 +17,9 @@ EXCLUDE_KEYWORDS = [
     # form factor / not-a-wristwatch
     "pocket watch", "smart watch", "smartwatch", "apple watch", "garmin", "fitbit",
     "fitness", "digital watch",
+    # buyer segment / size profile
+    "women's", "womens", "women ", "ladies", "lady's", "ladys", "girls",
+    "female watch",
     # parts-only / components (distinct from a for-repair WATCH, which we want)
     "movement only", "dial only", "case only", "hands only", "parts lot",
     "spares or repair lot", "lot of watch",
@@ -120,8 +123,10 @@ ROLEX_TARGETS = ["submariner", "gmt-master", "gmt master", "daytona"]
 
 # IWC golden era (~1980–2005, pre-Richemont): own tab. He owns Mark XV, 3706,
 # PD 3701; hunting these refs specifically. Checked only when the brand is IWC.
-IWC_TARGETS = ["big pilot", "5002", "3713", "doppel", "mark xii", "mark 12",
-               "3241", "9241", "utc", "3251", "mark xv", "3253", "3706",
+IWC_TARGETS = ["big pilot", "iw5002", "5002", "iwc 3713", "iw3713", "3713",
+               "double chronograph", "doppelchronograph", "doppel", "mark xii",
+               "mark 12", "iw3241", "3241", "iw9241", "9241", "utc",
+               "iw3251", "3251", "mark xv", "3253", "3706",
                "gst", "aquatimer 3536", "3536", "ingenieur 3521", "porsche design"]
 IWC_ERA_END = 2005             # later than this -> modern, penalize
 W_IWC_TARGET = 6               # must outrank a modern piece with box&papers

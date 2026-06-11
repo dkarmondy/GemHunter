@@ -93,6 +93,13 @@ def _reject(r: Score, why: str) -> Score:
     return r
 
 
+def _is_womens_watch(t: str, asp: dict) -> bool:
+    dept = f" {asp.get('department', '')} "
+    if any(w in dept for w in (" women ", " womens ", " women's ", " ladies ", " lady ")):
+        return True
+    return bool(re.search(r"\b(women'?s|lad(y|ies)|girls?|female)\b", t))
+
+
 def score_listing(listing: Listing) -> Score:
     r = Score(listing=listing)
     t = (listing.title or "").lower()
@@ -117,6 +124,8 @@ def score_listing(listing: Listing) -> Score:
     hit = _first_hit(t, K.EXCLUDE_KEYWORDS)
     if hit:
         return _reject(r, f"excluded: {hit.strip()}")
+    if _is_womens_watch(t, asp):
+        return _reject(r, "women's watch")
     if _first_hit(t, K.QUARTZ_KEYWORDS) or "quartz" in movement_asp:
         return _reject(r, "quartz")
     qm = _first_hit(t, K.QUARTZ_MODELS)
