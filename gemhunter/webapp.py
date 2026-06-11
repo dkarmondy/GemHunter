@@ -185,7 +185,8 @@ HTML = r"""<!doctype html>
     .actions{display:flex;gap:8px;margin-top:10px}
     .actions button{border:1px solid rgba(148,163,184,.18);background:#0b1425;color:var(--soft);border-radius:12px;padding:8px 10px;font-weight:900}
     .heart.saved{background:#facc15;color:#07111f;border-color:#facc15}
-    .less{color:#fecdd3}
+    .less{color:#f8fafc;display:inline-flex;align-items:center;justify-content:center;min-width:38px}
+    .less svg{width:17px;height:17px;display:block;stroke:currentColor}
     .empty{border:1px dashed rgba(148,163,184,.2);border-radius:22px;padding:26px 16px;color:var(--muted);text-align:center;background:rgba(15,23,42,.35)}
     .placeholder{margin-top:14px;border:1px solid rgba(148,163,184,.16);border-radius:24px;padding:22px;background:rgba(16,26,45,.86);box-shadow:var(--shadow)}
     .placeholder h2{font-size:26px}.placeholder p{color:var(--muted)}
@@ -396,7 +397,7 @@ function card(item, color){
       <div class="seller">seller ${seller} · ${esc(item.search_name)}</div>
       <div class="actions">
         <button class="heart ${item.saved ? 'saved' : ''}" onclick="toggleSaved(event,'${esc(item.item_id)}',${item.saved ? 0 : 1})">${item.saved ? '♥ Hearted' : '♡ Heart'}</button>
-        <button class="less" aria-label="Less like this" onclick="hideItem(event,'${esc(item.item_id)}')">👎</button>
+        <button class="less" aria-label="Less like this" onclick="hideItem(event,'${esc(item.item_id)}')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V3"/><path d="M7 10.5 9.1 3H17v11h-5.2l-1.5 5.2c-.2.7-.8 1.2-1.6 1.2h-.4c-.8 0-1.4-.8-1.2-1.6L8.4 14H5.2c-1.2 0-2.1-1.1-1.8-2.3l1.3-5.2C5 5.6 5.8 5 6.7 5h2"/></svg></button>
       </div>
     </div>
   </article>`;
