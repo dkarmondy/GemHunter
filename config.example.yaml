@@ -29,3 +29,25 @@ searches:
     query: "rolex daytona box papers"
     buying_options: [AUCTION, FIXED_PRICE]
     condition_ids: [3000]
+
+  # ---- Other: non-chrono taste watches (feed the "Other" tab) ----
+  - name: "Omega Seamaster"
+    query: "omega seamaster"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
+  - name: "Tudor Black Bay"
+    query: "tudor black bay"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
+  - name: "Jaeger-LeCoultre"
+    query: "jaeger lecoultre"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
+  - name: "Patek Calatrava"
+    query: "patek philippe calatrava"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]
+  - name: "Cartier Tank"
+    query: "cartier tank"
+    buying_options: [AUCTION, FIXED_PRICE]
+    condition_ids: [3000]

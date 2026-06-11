@@ -115,6 +115,8 @@ COLLECTOR_TARGETS = [
     "speedmaster", "moonwatch", "navitimer", "el primero", "reverso", "calatrava",
 ]
 NO_REPAIR_BRANDS = ["rolex"]   # never a repair project — route to Path A only
+# Rolex models that get their own "Box & Papers Rolex" tab (others → Other tab).
+ROLEX_TARGETS = ["submariner", "gmt-master", "gmt master", "daytona"]
 
 FULLSET_KEYWORDS = ["box and papers", "box & papers", "box & paper", "box and paper",
                     "full set", "complete set", "box papers", "with papers", "b&p"]

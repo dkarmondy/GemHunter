@@ -31,6 +31,14 @@ def _first_hit(text: str, needles) -> str | None:
     return next((n for n in needles if n in text), None)
 
 
+_CHRONO_RE = re.compile(r"\bchrono\b")
+
+
+def _is_chrono(text: str) -> bool:
+    # "chronograph" or standalone "chrono" — but NOT "chronometer" (a certification).
+    return "chronograph" in text or bool(_CHRONO_RE.search(text))
+
+
 def _parse_size(value: str) -> float | None:
     m = re.search(r"(\d{2}(?:\.\d+)?)\s*mm", value.lower())
     return float(m.group(1)) if m else None
@@ -137,7 +145,7 @@ def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> 
         return _reject(r, "no-repair brand (route to collector)")
     taste, reasons = 0.0, []
     brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
-    chrono_hit = _first_hit(f"{t} {features_asp}", K.CHRONO_KEYWORDS)
+    chrono_hit = _is_chrono(f"{t} {features_asp}")
     cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
     if brand_hit:
         taste += K.W_BRAND
@@ -178,14 +186,22 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
     Anything that's neither Rolex nor a chronograph is dropped.
     """
     is_rolex = "rolex" in f"{t} {brand_asp}"
+    rolex_target = is_rolex and bool(_first_hit(t, K.ROLEX_TARGETS))
     brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
     model_hit = _first_hit(t, K.COLLECTOR_TARGETS)
-    chrono_hit = _first_hit(f"{t} {features_asp}", K.CHRONO_KEYWORDS)
+    chrono_hit = _is_chrono(f"{t} {features_asp}")
     cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
     is_chrono = bool(chrono_hit or cal_hit)
 
-    if not (is_rolex or is_chrono):
-        return _reject(r, "not rolex/chronograph")
+    # Route to one of three tabs (repair handled earlier).
+    if rolex_target:
+        stream, mode = "rolex", "🎯 box & papers"
+    elif is_chrono:
+        stream, mode = "chrono", "⏱ chronograph"
+    elif brand_hit or model_hit:
+        stream, mode = "other", "💎 taste"
+    else:
+        return _reject(r, "not rolex/chrono/taste")
 
     reasons, score = [], 0.0
     if brand_hit:
@@ -234,9 +250,5 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    if is_rolex:
-        r.stream, r.mode = "rolex", "🎯 box & papers"
-    else:
-        r.stream, r.mode = "chrono", "⏱ vintage chrono"
-    r.score, r.reasons = score, reasons
+    r.score, r.stream, r.mode, r.reasons = score, stream, mode, reasons
     return r
