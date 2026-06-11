@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS listings (
     reasons          TEXT,
     rejected         INTEGER DEFAULT 0,
     reject_reason    TEXT,
+    hidden           INTEGER DEFAULT 0,
+    saved            INTEGER DEFAULT 0,
     first_seen       REAL,
     last_seen        REAL
 );
@@ -55,7 +57,11 @@ class Storage:
 
     def _migrate(self) -> None:
         """Add columns to a pre-existing db (e.g. the Pi's) without losing data."""
-        for col, decl in [("stream", "TEXT")]:
+        for col, decl in [
+            ("stream", "TEXT"),
+            ("hidden", "INTEGER DEFAULT 0"),
+            ("saved", "INTEGER DEFAULT 0"),
+        ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
@@ -74,30 +80,51 @@ class Storage:
             """INSERT OR REPLACE INTO listings
                (item_id, search_name, title, price, currency, buying_option, bid_count,
                 seller_username, seller_pct, seller_score, condition, url, image_url,
-                score, stream, mode, reasons, rejected, reject_reason, first_seen, last_seen)
+                score, stream, mode, reasons, rejected, reject_reason, hidden, saved,
+                first_seen, last_seen)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                   COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
+                   COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT first_seen FROM listings WHERE item_id = ?), ?), ?)""",
             (l.item_id, l.search_name, l.title, l.price, l.currency, l.buying_option,
              l.bid_count, l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
              l.condition, l.url, l.image_url, result.score, result.stream, result.mode,
              ", ".join(result.reasons), int(result.rejected), result.reject_reason,
-             l.item_id, now, now),
+             l.item_id, l.item_id, l.item_id, now, now),
         )
         self._conn.commit()
 
     def top_gems(self, min_score: float = 0.0, limit: int = 200,
-                 stream: str | None = None) -> list[dict]:
+                 stream: str | None = None, include_hidden: bool = False) -> list[dict]:
+        hidden_clause = "" if include_hidden else " AND hidden = 0"
         if stream:
             cur = self._conn.execute(
-                """SELECT * FROM listings WHERE rejected = 0 AND score >= ? AND stream = ?
+                f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ? AND stream = ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, stream, limit))
         else:
             cur = self._conn.execute(
-                """SELECT * FROM listings WHERE rejected = 0 AND score >= ?
+                f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, limit))
         return [dict(r) for r in cur.fetchall()]
+
+    def set_saved(self, item_id: str, saved: bool) -> bool:
+        cur = self._conn.execute(
+            "UPDATE listings SET saved = ? WHERE item_id = ?", (int(saved), item_id))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def set_hidden(self, item_id: str, hidden: bool) -> bool:
+        cur = self._conn.execute(
+            "UPDATE listings SET hidden = ? WHERE item_id = ?", (int(hidden), item_id))
+        self._conn.commit()
+        return cur.rowcount > 0
+
+    def get_listing(self, item_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM listings WHERE item_id = ?", (item_id,)).fetchone()
+        return dict(row) if row else None
 
     def stats(self) -> dict:
         row = self._conn.execute(

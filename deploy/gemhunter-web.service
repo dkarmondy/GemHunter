@@ -1,13 +1,12 @@
 [Unit]
-Description=GemHunter web — serves gems.html on :8080
+Description=GemHunter web app on :8080
 After=network-online.target
 
 [Service]
 Type=simple
 User=dkarm
-# Serve a dedicated folder (NOT the project dir, which contains .env with secrets).
-# That folder holds only a symlink to the generated gems.html.
-ExecStart=/usr/bin/python3 -m http.server 8080 --directory /home/dkarm/gemhunter-web
+WorkingDirectory=/home/dkarm/Projects/GemHunter
+ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.webapp --db /mnt/ssd/gemhunter/gemhunter.db --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=30
 
