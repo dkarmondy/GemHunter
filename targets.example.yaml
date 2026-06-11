@@ -1,0 +1,20 @@
+# Copy to targets.yaml on the Pi when you want editable watch targets.
+# The built-in rare targets still work without this file.
+
+rare:
+  - name: JLC Deep Sea Alarm
+    brand_terms: [jaeger, lecoultre, le coultre, jlc]
+    must_terms: [deep sea alarm, deepsea alarm, e857]
+
+  - name: Rolex Kew Observatory
+    brand_terms: [rolex]
+    must_terms: [kew, observatory trial, observatory]
+
+  - name: Movado Tempograf
+    brand_terms: [movado]
+    must_terms: [tempograf, tempo graf, tempo-graf]
+
+  # Example:
+  # - name: Universal Geneve Space Compax
+  #   brand_terms: [universal geneve, universal gen]
+  #   must_terms: [space compax]

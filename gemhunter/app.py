@@ -32,6 +32,7 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
             continue
         for listing in listings:
             if not storage.is_new(listing.item_id):
+                storage.record_observation(listing)
                 continue                              # dedupe: never re-alert
             seen_new += 1
             result = score_listing(listing)
@@ -61,6 +62,7 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
             b = visual.bonus(sim)
             if b:
                 r.score += b
+                r.opportunity = min(100.0, getattr(r, "opportunity", 0.0) + b * 4.0)
                 r.reasons.append(f"looks:{sim:.2f}(+{b:g})")
         keep.sort(key=lambda r: r.score, reverse=True)
 

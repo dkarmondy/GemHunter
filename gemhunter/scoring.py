@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from . import knowledge as K
+from . import targets as target_table
 from .models import Listing
 
 
@@ -20,9 +21,13 @@ from .models import Listing
 class Score:
     listing: Listing
     score: float = 0.0
+    opportunity: float = 0.0
+    confidence: float = 0.0
     stream: str = ""               # "repair" or "collector"
     mode: str = ""                 # short label for the alert
     reasons: list = field(default_factory=list)
+    risk_tags: list = field(default_factory=list)
+    action_note: str = ""
     rejected: bool = False
     reject_reason: str = ""
 
@@ -93,6 +98,79 @@ def _reject(r: Score, why: str) -> Score:
     return r
 
 
+def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, value))
+
+
+def _seller_confidence(l: Listing) -> float:
+    pct, cnt = l.seller_feedback_pct, l.seller_feedback_score
+    if pct <= 0:
+        return 45.0
+    score = 35.0
+    score += min(28.0, cnt / 40.0)
+    if pct >= 99.8:
+        score += 24.0
+    elif pct >= 99:
+        score += 19.0
+    elif pct >= 97:
+        score += 12.0
+    elif pct >= 95:
+        score += 5.0
+    elif pct < 92:
+        score -= 12.0
+    if cnt < 20:
+        score -= 14.0
+    return _clamp(score)
+
+
+def _risk_tags(t: str, asp: dict, listing: Listing, stream: str, year: int | None) -> list[str]:
+    risks = []
+    if listing.seller_feedback_score < 100:
+        risks.append("seller-count")
+    if listing.seller_feedback_pct and listing.seller_feedback_pct < 99:
+        risks.append("seller-feedback")
+    if not listing.image_url:
+        risks.append("no-image")
+    if stream in ("repair", "rare", "chrono") and not asp.get("movement"):
+        risks.append("no-movement-info")
+    if _first_hit(t, K.NEGATIVE_KEYWORDS):
+        risks.append("condition-risk")
+    if "unpolished" not in t and ("polished" in t or "refinished" in t):
+        risks.append("polished")
+    if year and year < K.AGE_FLOOR_YEAR:
+        risks.append("pre-1960")
+    size = _parse_size(asp.get("case size", ""))
+    if size and size < K.SIZE_TINY:
+        risks.append("small-case")
+    if listing.buying_option == "AUCTION" and not listing.bid_count:
+        risks.append("low-bid-signal")
+    return risks
+
+
+def _finish(r: Score, stream: str, mode: str, score: float, reasons: list,
+            t: str, asp: dict, opportunity_bias: float = 0.0,
+            confidence_bias: float = 0.0, action_note: str = "") -> Score:
+    year = _parse_year(asp.get("year manufactured", "") or asp.get("year", "")) \
+        or _parse_year(t)
+    risks = _risk_tags(t, asp, r.listing, stream, year)
+    opportunity = _clamp(score * 5.2 + opportunity_bias - len(risks) * 2.0)
+    confidence = _seller_confidence(r.listing) + confidence_bias
+    if r.listing.auth_guarantee:
+        confidence += 8.0
+    if "box&papers" in reasons or "great-seller" in reasons:
+        confidence += 6.0
+    confidence -= len(risks) * 5.0
+    r.score = score
+    r.opportunity = round(opportunity, 1)
+    r.confidence = round(_clamp(confidence), 1)
+    r.stream = stream
+    r.mode = mode
+    r.reasons = reasons
+    r.risk_tags = risks
+    r.action_note = action_note
+    return r
+
+
 def _is_womens_watch(t: str, asp: dict) -> bool:
     dept = f" {asp.get('department', '')} "
     if any(w in dept for w in (" women ", " womens ", " women's ", " ladies ", " lady ")):
@@ -102,7 +180,7 @@ def _is_womens_watch(t: str, asp: dict) -> bool:
 
 def _rare_match(t: str, brand_asp: str) -> str | None:
     hay = f"{t} {brand_asp}"
-    for target in K.RARE_TARGETS:
+    for target in target_table.rare_targets(K.RARE_TARGETS):
         if not any(b in hay for b in target["brand_any"]):
             continue
         if any(m in hay for m in target["must_any"]):
@@ -197,8 +275,11 @@ def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> 
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    r.score, r.stream, r.mode, r.reasons = score, "repair", "🔧 for parts/repair", reasons
-    return r
+    return _finish(
+        r, "repair", "🔧 for parts/repair", score, reasons, t, asp,
+        opportunity_bias=14.0, confidence_bias=-8.0,
+        action_note="Inspect movement photos, missing parts, rust, dial, hands, and pusher/crown originality.",
+    )
 
 
 def _score_rare(r, t, blob, asp, movement_asp, features_asp, brand_asp, rare_hit, year) -> Score:
@@ -248,8 +329,11 @@ def _score_rare(r, t, blob, asp, movement_asp, features_asp, brand_asp, rare_hit
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    r.score, r.stream, r.mode, r.reasons = score, "rare", "rare radar", reasons
-    return r
+    return _finish(
+        r, "rare", "rare radar", score, reasons, t, asp,
+        opportunity_bias=18.0, confidence_bias=-3.0,
+        action_note="Verify reference, dial originality, case condition, movement correctness, and seller story.",
+    )
 
 
 def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> Score:
@@ -340,5 +424,11 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    r.score, r.stream, r.mode, r.reasons = score, stream, mode, reasons
-    return r
+    action_note = {
+        "rolex": "Check full-set proof, polishing, clasp/endlink correctness, serial era, and seller history.",
+        "patek": "Verify reference, dial originality, movement photos, papers, case condition, and service history.",
+        "iwc": "Check reference, era, bracelet/strap correctness, movement version, case wear, and service history.",
+        "chrono": "Inspect movement caliber, pusher/hands completeness, dial originality, rust, and case size.",
+        "taste": "Decide whether it meaningfully advances taste, then verify condition and seller quality.",
+    }.get(stream, "Review condition, originality, seller quality, and price against comps.")
+    return _finish(r, stream, mode, score, reasons, t, asp, action_note=action_note)

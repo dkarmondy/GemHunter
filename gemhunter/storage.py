@@ -27,18 +27,37 @@ CREATE TABLE IF NOT EXISTS listings (
     url              TEXT,
     image_url        TEXT,
     score            REAL,
+    opportunity      REAL DEFAULT 0,
+    confidence       REAL DEFAULT 0,
     stream           TEXT,
     mode             TEXT,
     reasons          TEXT,
+    risk_tags        TEXT,
+    action_note      TEXT,
     rejected         INTEGER DEFAULT 0,
     reject_reason    TEXT,
     hidden           INTEGER DEFAULT 0,
     saved            INTEGER DEFAULT 0,
+    feedback_reason  TEXT,
     first_seen       REAL,
     last_seen        REAL
 );
 CREATE INDEX IF NOT EXISTS idx_listings_score ON listings(score);
 CREATE INDEX IF NOT EXISTS idx_listings_rejected ON listings(rejected);
+
+CREATE TABLE IF NOT EXISTS listing_observations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id         TEXT,
+    observed_at     REAL,
+    search_name     TEXT,
+    price           REAL,
+    currency        TEXT,
+    buying_option   TEXT,
+    bid_count       INTEGER,
+    score           REAL,
+    stream          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_observations_item ON listing_observations(item_id, observed_at);
 
 CREATE TABLE IF NOT EXISTS comps (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -80,6 +99,11 @@ class Storage:
             ("stream", "TEXT"),
             ("hidden", "INTEGER DEFAULT 0"),
             ("saved", "INTEGER DEFAULT 0"),
+            ("opportunity", "REAL DEFAULT 0"),
+            ("confidence", "REAL DEFAULT 0"),
+            ("risk_tags", "TEXT"),
+            ("action_note", "TEXT"),
+            ("feedback_reason", "TEXT"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
@@ -99,17 +123,36 @@ class Storage:
             """INSERT OR REPLACE INTO listings
                (item_id, search_name, title, price, currency, buying_option, bid_count,
                 seller_username, seller_pct, seller_score, condition, url, image_url,
-                score, stream, mode, reasons, rejected, reject_reason, hidden, saved,
-                first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                score, opportunity, confidence, stream, mode, reasons, risk_tags,
+                action_note, rejected, reject_reason, hidden, saved,
+                feedback_reason, first_seen, last_seen)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
+                   COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
                    COALESCE((SELECT first_seen FROM listings WHERE item_id = ?), ?), ?)""",
             (l.item_id, l.search_name, l.title, l.price, l.currency, l.buying_option,
              l.bid_count, l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
-             l.condition, l.url, l.image_url, result.score, result.stream, result.mode,
-             ", ".join(result.reasons), int(result.rejected), result.reject_reason,
-             l.item_id, l.item_id, l.item_id, now, now),
+             l.condition, l.url, l.image_url, result.score,
+             getattr(result, "opportunity", 0.0), getattr(result, "confidence", 0.0),
+             result.stream, result.mode, ", ".join(result.reasons),
+             ", ".join(getattr(result, "risk_tags", [])), getattr(result, "action_note", ""),
+             int(result.rejected), result.reject_reason,
+             l.item_id, l.item_id, l.item_id, l.item_id, now, now),
+        )
+        self.record_observation(l, result)
+        self._conn.commit()
+
+    def record_observation(self, listing, result=None) -> None:
+        now = time.time()
+        self._conn.execute(
+            """INSERT INTO listing_observations
+               (item_id, observed_at, search_name, price, currency, buying_option,
+                bid_count, score, stream)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (listing.item_id, now, listing.search_name, listing.price, listing.currency,
+             listing.buying_option, listing.bid_count,
+             getattr(result, "score", None), getattr(result, "stream", None)),
         )
         self._conn.commit()
 
@@ -138,7 +181,7 @@ class Storage:
 
     def feedback_rows(self, limit: int = 500) -> list[dict]:
         cur = self._conn.execute(
-            """SELECT item_id, title, search_name, stream, reasons, saved, hidden
+            """SELECT item_id, title, search_name, stream, reasons, feedback_reason, saved, hidden
                FROM listings
                WHERE rejected = 0 AND (saved = 1 OR hidden = 1)
                ORDER BY last_seen DESC LIMIT ?""",
@@ -151,9 +194,10 @@ class Storage:
         self._conn.commit()
         return cur.rowcount > 0
 
-    def set_hidden(self, item_id: str, hidden: bool) -> bool:
+    def set_hidden(self, item_id: str, hidden: bool, reason: str = "") -> bool:
         cur = self._conn.execute(
-            "UPDATE listings SET hidden = ? WHERE item_id = ?", (int(hidden), item_id))
+            "UPDATE listings SET hidden = ?, feedback_reason = ? WHERE item_id = ?",
+            (int(hidden), reason, item_id))
         self._conn.commit()
         return cur.rowcount > 0
 

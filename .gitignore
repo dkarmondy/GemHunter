@@ -1,6 +1,7 @@
 # Secrets & local config
 .env
 config.yaml
+targets.yaml
 
 # Local database
 *.db

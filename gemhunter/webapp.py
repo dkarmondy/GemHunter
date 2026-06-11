@@ -65,7 +65,7 @@ def _tokens(text: str) -> set[str]:
 def _preference_profile(rows: list[dict]) -> tuple[Counter, Counter]:
     likes, dislikes = Counter(), Counter()
     for row in rows:
-        bag = _tokens(f"{row.get('title', '')} {row.get('search_name', '')} {row.get('reasons', '')}")
+        bag = _tokens(f"{row.get('title', '')} {row.get('search_name', '')} {row.get('reasons', '')} {row.get('feedback_reason', '')}")
         if row.get("saved"):
             likes.update(bag)
         if row.get("hidden"):
@@ -83,6 +83,12 @@ def _apply_learning(items: list[dict], likes: Counter, dislikes: Counter) -> lis
         item = dict(item)
         item["preference_boost"] = round(boost, 2)
         item["smart_score"] = round(float(item.get("score") or 0) + boost, 2)
+        if not item.get("opportunity"):
+            item["opportunity"] = round(min(100.0, float(item.get("score") or 0) * 5.2 + boost), 1)
+        if not item.get("confidence"):
+            pct = float(item.get("seller_pct") or 0)
+            count = float(item.get("seller_score") or 0)
+            item["confidence"] = round(min(100.0, 35 + min(28.0, count / 40.0) + (20 if pct >= 99 else 8 if pct >= 95 else 0)), 1)
         tuned.append(item)
     tuned.sort(key=lambda r: (r.get("saved", 0), r["smart_score"], r.get("score") or 0, r.get("last_seen") or 0), reverse=True)
     return tuned
@@ -166,6 +172,13 @@ HTML = r"""<!doctype html>
     .price small{display:block;text-align:right;color:var(--muted);font-size:11px;font-weight:700}
     .title{display:block;color:var(--text);font-size:14px;font-weight:850;line-height:1.22;text-decoration:none;margin-bottom:7px}
     .reasons{color:#8bdcff;font-size:12px;font-weight:650;margin-bottom:5px}
+    .judgment{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0}
+    .meter{background:#0b1425;border:1px solid rgba(148,163,184,.14);border-radius:12px;padding:7px}
+    .meter b{display:block;color:var(--text);font-size:16px;line-height:1;font-weight:950}
+    .meter span{display:block;color:var(--muted);font-size:10px;font-weight:850;text-transform:uppercase;margin-top:3px}
+    .risks{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
+    .risk{border:1px solid rgba(251,113,133,.24);background:rgba(251,113,133,.1);color:#fecdd3;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850}
+    .actionNote{color:#c8d4e6;font-size:12px;line-height:1.25;margin:6px 0 3px}
     .seller{color:var(--muted);font-size:12px}
     .actions{display:flex;gap:8px;margin-top:10px}
     .actions button{border:1px solid rgba(148,163,184,.18);background:#0b1425;color:var(--soft);border-radius:12px;padding:8px 10px;font-weight:900}
@@ -255,6 +268,11 @@ function hardRefresh(){ window.location.href = window.location.pathname + '?v=' 
 function renderModeDock(){
   $('modeDock').innerHTML = MODES.map(m => `<button class="mode ${m.id===mode?'active':''}" onclick="setMode('${m.id}')"><span class="ico">${m.icon}</span>${m.label}</button>`).join('');
 }
+function installSortOptions(){
+  const s = $('sortBy');
+  if (!s || s.querySelector('option[value="opportunity"]')) return;
+  s.querySelector('option[value="smart"]')?.insertAdjacentHTML('afterend', '<option value="opportunity">Opportunity</option><option value="confidence">Confidence</option>');
+}
 function setMode(next){
   mode = next; renderModeDock();
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -326,6 +344,8 @@ function applyFilters(){
     if (f.sortBy === 'priceAsc') return Number(a.price||0) - Number(b.price||0);
     if (f.sortBy === 'priceDesc') return Number(b.price||0) - Number(a.price||0);
     if (f.sortBy === 'seller') return Number(b.seller_pct||0) - Number(a.seller_pct||0);
+    if (f.sortBy === 'opportunity') return Number(b.opportunity||0) - Number(a.opportunity||0);
+    if (f.sortBy === 'confidence') return Number(b.confidence||0) - Number(a.confidence||0);
     return Number(b.smart_score||b.score||0) - Number(a.smart_score||a.score||0);
   });
   $('shownCount').textContent = rows.length + ' shown';
@@ -338,12 +358,20 @@ function card(item, color){
   const boost = Number(item.preference_boost || 0);
   const learn = boost > .25 ? `<span class="learn">+${boost.toFixed(1)} taste</span>` : '';
   const img = item.image_url ? `<img src="${esc(item.image_url)}" loading="lazy">` : '';
+  const opp = Math.round(Number(item.opportunity || 0));
+  const conf = Math.round(Number(item.confidence || 0));
+  const risks = String(item.risk_tags || '').split(',').map(s => s.trim()).filter(Boolean);
+  const riskHtml = risks.length ? `<div class="risks">${risks.map(r => `<span class="risk">${esc(r)}</span>`).join('')}</div>` : '';
+  const action = item.action_note ? `<div class="actionNote">${esc(item.action_note)}</div>` : '';
   return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
     <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
     <div class="body">
       <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}<span class="price">${money(item.price)}<small>${kind}${bids}</small></span></div>
       <a class="title" href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <div class="reasons">${esc(item.reasons)}</div>
+      <div class="judgment"><div class="meter"><b>${opp}</b><span>Opportunity</span></div><div class="meter"><b>${conf}</b><span>Confidence</span></div></div>
+      ${riskHtml}
+      ${action}
       <div class="seller">seller ${seller} · ${esc(item.search_name)}</div>
       <div class="actions">
         <button class="heart ${item.saved ? 'saved' : ''}" onclick="toggleSaved(event,'${esc(item.item_id)}',${item.saved ? 0 : 1})">${item.saved ? '♥ Hearted' : '♡ Heart'}</button>
@@ -378,7 +406,9 @@ async function toggleSaved(ev,id,saved){
 }
 async function hideItem(ev,id){
   ev.preventDefault(); ev.stopPropagation();
-  await action('/api/hide',{item_id:id,hidden:true});
+  const reason = prompt('Less like this because?', 'taste');
+  if (reason === null) return;
+  await action('/api/hide',{item_id:id,hidden:true,reason:reason});
   showToast('Taught: less like this');
   const card = ev.target.closest('.card');
   items = items.filter(item => item.item_id !== id);
@@ -415,7 +445,7 @@ surface.addEventListener('touchstart', ev => { if(ev.changedTouches.length){ con
 surface.addEventListener('touchend', ev => { if(ev.changedTouches.length){ const t=ev.changedTouches[0]; swipeEnd(t.clientX,t.clientY); }}, {passive:true});
 document.addEventListener('keydown', ev => { if(ev.key==='ArrowRight') swipeEnd((swipe?.x || 0)+100, swipe?.y || 0); if(ev.key==='ArrowLeft') swipeEnd((swipe?.x || 0)-100, swipe?.y || 0); });
 
-renderModeDock(); renderRail(); loadCollection();
+renderModeDock(); installSortOptions(); renderRail(); loadCollection();
 </script>
 </body>
 </html>
@@ -499,7 +529,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/save":
             ok = storage.set_saved(item_id, bool(body.get("saved")))
         elif self.path == "/api/hide":
-            ok = storage.set_hidden(item_id, bool(body.get("hidden", True)))
+            ok = storage.set_hidden(item_id, bool(body.get("hidden", True)), str(body.get("reason", ""))[:120])
         else:
             storage.close()
             self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
