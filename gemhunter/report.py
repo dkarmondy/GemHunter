@@ -23,9 +23,13 @@ def _now_str() -> str:
     # Built manually (no %-m/%I) so it's the same on Windows and the Pi.
     return f"{now.month}/{now.day}/{now.year} {hour12}:{now.minute:02d} {ampm} {now.strftime('%Z')}"
 
+# (stream, heading, accent color, max items or None, min score for THIS section)
+# Repair keeps a lower bar — the best as-is finds omit the caliber, so they score
+# lower; a flat 10 would hide exactly the projects we want.
 STREAMS = [
-    ("repair", "🔧 For parts / repair", "#b45309"),
-    ("collector", "🎯 Box & papers — nice / full set", "#15803d"),
+    ("repair", "🔧 For parts / repair", "#b45309", None, 6),
+    ("rolex", "🎯 Box & papers — top 10 Rolex", "#15803d", 10, 10),
+    ("chrono", "⏱ Vintage chronographs", "#1d4ed8", None, 10),
 ]
 
 
@@ -54,8 +58,8 @@ def write_report(db_path: str, out_path: str = "gems.html",
     s = Storage(db_path)
     when = _now_str()
     sections, total = [], 0
-    for stream, title, color in STREAMS:
-        rows = s.top_gems(min_score, limit, stream=stream)
+    for stream, title, color, cap, smin in STREAMS:
+        rows = s.top_gems(max(min_score, smin), cap or limit, stream=stream)
         total += len(rows)
         cards = "".join(_card(r, color) for r in rows) or '<p class="empty">— none yet —</p>'
         sections.append(
@@ -71,7 +75,7 @@ def write_report(db_path: str, out_path: str = "gems.html",
  h2{{font-size:15px;margin:26px 0 12px;padding-left:10px;border-left:4px solid}}
  .count{{color:#94a3b8;font-weight:400;font-size:13px}}
  .empty{{color:#64748b;margin:0 0 0 12px}}
- .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:14px}}
+ .grid{{display:grid;grid-template-columns:1fr;gap:10px;max-width:680px}}
  .card{{display:flex;gap:12px;background:#1e293b;border-radius:10px;overflow:hidden;
         text-decoration:none;color:inherit;border:1px solid #334155}}
  .card:hover{{border-color:#64748b}}
@@ -97,8 +101,8 @@ def print_summary(db_path: str, min_score: float = 0.0, top: int = 10) -> None:
     st = s.stats()
     print(f"\nDataset: {st['total']} listings seen · {st['rejected']} filtered · "
           f"{st['gems']} gems")
-    for stream, title, _ in STREAMS:
-        rows = s.top_gems(min_score, 1000, stream=stream)
+    for stream, title, _, cap, smin in STREAMS:
+        rows = s.top_gems(max(min_score, smin), cap or 1000, stream=stream)
         buckets = Counter(int(r["score"] // 2) * 2 for r in rows)
         print(f"\n{title}  —  {len(rows)} gems (score ≥ {min_score:g})")
         for b in sorted(buckets, reverse=True):

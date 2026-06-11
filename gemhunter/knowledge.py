@@ -17,9 +17,15 @@ EXCLUDE_KEYWORDS = [
     # form factor / not-a-wristwatch
     "pocket watch", "smart watch", "smartwatch", "apple watch", "garmin", "fitbit",
     "fitness", "digital watch",
-    # parts-only (distinct from a for-repair WATCH, which we want)
+    # parts-only / components (distinct from a for-repair WATCH, which we want)
     "movement only", "dial only", "case only", "hands only", "parts lot",
     "spares or repair lot", "lot of watch",
+    " stem", "winding stem", "balance complete", "balance staff", "mainspring",
+    "hairspring", "bezel insert", "bezel only", "crown only", "dial for",
+    "caseback only", "movement spacer", "rotor weight",
+    "case and bracelet", "case & bracelet", "case and dial",
+    # eBay Live listings
+    "ebay live",
     # replica / redial tells (keep "tribute" — legit, e.g. IWC Tribute to 3705)
     "replica", " aaa ", "homage", "redial", "re-dial", "refinished dial",
     "aftermarket dial", "repainted dial",

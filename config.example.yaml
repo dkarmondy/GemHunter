@@ -2,7 +2,7 @@
 # In Phase 2 this stays a local file; a phone-editable Google Sheet is a parked future phase.
 poll_interval_seconds: 1800      # 30 min (auctions run ~7 days)
 marketplace: EBAY_US
-min_score: 4                     # only alert candidates scoring >= this
+min_score: 6                     # floor for keep/alert; report applies per-section bars (repair 6, Rolex/chrono 10)
 alert_limit: 25                  # max alerts per cycle
 enrich: true                     # fetch item specifics (size/movement/box-papers) per candidate
 

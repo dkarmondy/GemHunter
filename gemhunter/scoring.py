@@ -122,7 +122,10 @@ def score_listing(listing: Listing) -> Score:
         return _reject(r, why)
 
     # ----------------------- STREAM SELECT -----------------------
-    project = _first_hit(t, K.PROJECT_KEYWORDS)
+    # A project = title says as-is/for-parts, OR eBay condition is "For parts or not working".
+    cond = (listing.condition or "").lower()
+    project = _first_hit(t, K.PROJECT_KEYWORDS) or \
+        ("for parts (condition)" if "parts" in cond else None)
     if project:
         return _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project)
     return _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp)
@@ -169,41 +172,43 @@ def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> 
 
 
 def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> Score:
-    """Path A — nice complete pieces; box & papers float to the top."""
-    reasons = []
+    """Not-a-project pieces. Routes to two streams:
+       rolex  — Rolex (box & papers float to the top)
+       chrono — vintage/other chronographs (need not be full set)
+    Anything that's neither Rolex nor a chronograph is dropped.
+    """
+    is_rolex = "rolex" in f"{t} {brand_asp}"
     brand_hit = _first_hit(f"{t} {brand_asp}", K.TASTE_BRANDS)
     model_hit = _first_hit(t, K.COLLECTOR_TARGETS)
     chrono_hit = _first_hit(f"{t} {features_asp}", K.CHRONO_KEYWORDS)
     cal_hit, cal_pts, is_cw = _movement_match(t, movement_asp)
-    if not (brand_hit or model_hit or cal_hit):
-        return _reject(r, "not a collector target")
+    is_chrono = bool(chrono_hit or cal_hit)
 
-    taste = 0.0
+    if not (is_rolex or is_chrono):
+        return _reject(r, "not rolex/chronograph")
+
+    reasons, score = [], 0.0
     if brand_hit:
-        taste += K.W_TARGET
+        score += K.W_TARGET
         reasons.append(f"brand:{brand_hit.strip()}")
     if model_hit:
-        taste += K.W_MODEL
+        score += K.W_MODEL
         reasons.append(f"model:{model_hit.strip()}")
     if chrono_hit:
-        taste += K.W_CHRONO
+        score += K.W_CHRONO
         reasons.append("chronograph")
     if cal_hit:
-        taste += cal_pts
+        score += cal_pts
         reasons.append(f"caliber:{cal_hit}")
-    if taste < K.COLLECTOR_MIN_TASTE:
-        return _reject(r, f"below taste gate ({taste:.0f})")
-
-    score = taste
-    if is_cw:
-        score += K.W_COLUMN_WHEEL
-        reasons.append("column-wheel")
+        if is_cw:
+            score += K.W_COLUMN_WHEEL
+            reasons.append("column-wheel")
     grade = next((b for b in K.BRAND_GRADE if b in t), None)
     if grade:
         score += K.BRAND_GRADE[grade]
         reasons.append(f"grade:{grade}")
 
-    # Condition premium — the heart of Path A.
+    # Condition premium — pushes box & papers / original pieces to the top.
     fullset = (_first_hit(blob, K.FULLSET_KEYWORDS)
                or asp.get("with papers") == "yes"
                or asp.get("with original box/packaging") == "yes")
@@ -229,5 +234,9 @@ def _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp) -> 
         score += K.W_NEGATIVE
         reasons.append(f"⚠{neg.strip()}")
 
-    r.score, r.stream, r.mode, r.reasons = score, "collector", "🎯 box & papers", reasons
+    if is_rolex:
+        r.stream, r.mode = "rolex", "🎯 box & papers"
+    else:
+        r.stream, r.mode = "chrono", "⏱ vintage chrono"
+    r.score, r.reasons = score, reasons
     return r
