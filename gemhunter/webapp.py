@@ -64,7 +64,7 @@ def _html() -> bytes:
     .tab.active{{background:var(--c);border-color:var(--c);color:#07111f}}
     .toolbar{{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:14px 0 10px;color:#94a3b8;font-size:13px}}
     .reload{{border:1px solid #334155;background:#172033;color:#cbd5e1;border-radius:8px;padding:7px 10px;font-weight:650}}
-    .grid{{display:flex;flex-direction:column;gap:11px}}
+    .grid{{display:flex;flex-direction:column;gap:11px;touch-action:pan-y}}
     .empty{{color:#64748b;padding:28px 4px}}
     .card{{display:flex;gap:13px;background:#131c2e;border:1px solid #233047;border-radius:13px;overflow:hidden;color:inherit;text-decoration:none}}
     .card.saved{{border-color:#eab308;box-shadow:0 0 0 1px rgba(234,179,8,.25)}}
@@ -117,7 +117,17 @@ function showToast(msg) {{
 function renderTabs(counts={{}}) {{
   tabs.innerHTML = STREAMS.map(s => `<button class="tab ${{s.id===active?'active':''}}" style="--c:${{s.color}}" onclick="selectTab('${{s.id}}')">${{s.icon}} ${{s.label}} <span class="badge">${{counts[s.id] ?? ''}}</span></button>`).join('');
 }}
-function selectTab(id) {{ active = id; renderTabs(window.counts || {{}}); loadActive(); }}
+function activeIndex() {{ return STREAMS.findIndex(s => s.id === active); }}
+function selectTab(id) {{
+  active = id;
+  renderTabs(window.counts || {{}});
+  tabs.querySelector('.tab.active')?.scrollIntoView({{inline:'center', block:'nearest', behavior:'smooth'}});
+  loadActive();
+}}
+function moveTab(delta) {{
+  const next = Math.max(0, Math.min(STREAMS.length - 1, activeIndex() + delta));
+  if (next !== activeIndex()) selectTab(STREAMS[next].id);
+}}
 async function loadActive() {{
   const stream = STREAMS.find(s => s.id === active);
   summary.textContent = 'Loading ' + stream.label + '...';
@@ -166,6 +176,26 @@ async function hideItem(ev, id) {{
   document.querySelector(`[data-id="${{CSS.escape(id)}}"]`)?.remove();
   showToast('Hidden');
 }}
+let swipe = null;
+grid.addEventListener('pointerdown', ev => {{
+  if (ev.button !== 0 && ev.pointerType === 'mouse') return;
+  swipe = {{x:ev.clientX, y:ev.clientY, at:Date.now()}};
+}}, {{passive:true}});
+grid.addEventListener('pointerup', ev => {{
+  if (!swipe) return;
+  const t = ev;
+  const dx = t.clientX - swipe.x;
+  const dy = t.clientY - swipe.y;
+  swipe = null;
+  if (Math.abs(dx) < 70 || Math.abs(dx) < Math.abs(dy) * 1.25) return;
+  // User preference: swiping right moves to the next tab (Rolex -> Patek).
+  moveTab(dx > 0 ? 1 : -1);
+}}, {{passive:true}});
+grid.addEventListener('pointercancel', () => {{ swipe = null; }}, {{passive:true}});
+document.addEventListener('keydown', ev => {{
+  if (ev.key === 'ArrowRight') moveTab(1);
+  if (ev.key === 'ArrowLeft') moveTab(-1);
+}});
 renderTabs(); loadActive();
 </script>
 </body></html>""".encode("utf-8")
