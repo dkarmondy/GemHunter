@@ -331,7 +331,7 @@ function card(item, color){
       <div class="seller">seller ${seller} · ${esc(item.search_name)}</div>
       <div class="actions">
         <button class="heart ${item.saved ? 'saved' : ''}" onclick="toggleSaved(event,'${esc(item.item_id)}',${item.saved ? 0 : 1})">${item.saved ? '♥ Hearted' : '♡ Heart'}</button>
-        <button class="less" onclick="hideItem(event,'${esc(item.item_id)}')">Less like this</button>
+        <button class="less" aria-label="Less like this" onclick="hideItem(event,'${esc(item.item_id)}')">👎</button>
       </div>
     </div>
   </article>`;
@@ -345,13 +345,30 @@ async function toggleSaved(ev,id,saved){
   ev.preventDefault(); ev.stopPropagation();
   await action('/api/save',{item_id:id,saved:!!saved});
   showToast(saved ? 'Hearted' : 'Unhearted');
-  if (mode === 'saved') loadSaved(); else loadCollection();
+  const card = ev.target.closest('.card');
+  const button = ev.target.closest('button');
+  items = items.map(item => item.item_id === id ? {...item, saved: saved ? 1 : 0} : item);
+  if (mode === 'saved' && !saved) {
+    card?.remove();
+    if (!savedFeed.querySelector('.card')) savedFeed.innerHTML = '<p class="empty">No saved watches yet. Heart a listing to start training your taste model.</p>';
+    return;
+  }
+  card?.classList.toggle('saved', !!saved);
+  if (button) {
+    button.classList.toggle('saved', !!saved);
+    button.textContent = saved ? '♥ Hearted' : '♡ Heart';
+    button.setAttribute('onclick', `toggleSaved(event,'${id}',${saved ? 0 : 1})`);
+  }
 }
 async function hideItem(ev,id){
   ev.preventDefault(); ev.stopPropagation();
   await action('/api/hide',{item_id:id,hidden:true});
   showToast('Taught: less like this');
-  if (mode === 'saved') loadSaved(); else loadCollection();
+  const card = ev.target.closest('.card');
+  items = items.filter(item => item.item_id !== id);
+  card?.remove();
+  if (mode === 'discover') $('shownCount').textContent = document.querySelectorAll('#feed .card').length + ' shown';
+  if (mode === 'saved' && !savedFeed.querySelector('.card')) savedFeed.innerHTML = '<p class="empty">No saved watches yet. Heart a listing to start training your taste model.</p>';
 }
 function clearFilters(){
   ['maxPrice','minSeller','minScore'].forEach(id => $(id).value = '');
