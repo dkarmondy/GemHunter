@@ -22,28 +22,32 @@ cd ~/Projects/GemHunter && git pull
     --db /mnt/ssd/gemhunter/gemhunter.db
 ```
 
-## 2. Visual taste scoring (CLIP)
+## 2. Visual taste scoring (contrastive CLIP)
 
-Anchors are built on Windows from `E:\WATCHES\COLLECTION` (`scripts/build_taste_anchors.py`),
-then copied over. The Pi also needs the ONNX runtime + the model (~350MB, one time):
+Scores each listing thumbnail by similarity-to-your-collection MINUS similarity-to-junk.
+- **Negatives** (generic) ship in the repo — `git pull` brings them, nothing to copy.
+- **Positives** = your collection anchors, built on Windows from `E:\WATCHES\COLLECTION`
+  and copied over (personal; gitignored):
 
 ```powershell
-# Windows: copy the anchor set
+# Windows
 scp data\taste_anchors.npz dkarm@raspberrypi.local:/home/dkarm/Projects/GemHunter/data/
 ```
 
 ```bash
 # Pi
-cd ~/Projects/GemHunter
-.venv/bin/pip install -r requirements-visual.txt
-.venv/bin/python -c "from gemhunter import visual; visual.download_model()"
-sed -i 's/^visual: false/visual: true/' config.yaml   # or edit by hand
+cd ~/Projects/GemHunter && git pull
+.venv/bin/pip install -r requirements-visual.txt     # onnxruntime/pillow/numpy (aarch64)
+.venv/bin/python -c "from gemhunter import visual; visual.download_model()"   # ~350MB, one time
+sed -i 's/^visual: false/visual: true/' config.yaml
 sudo systemctl restart gemhunter
-journalctl -u gemhunter -f     # look for "looks:0.xx(+n)" in alert reasons
+journalctl -u gemhunter -f     # look for e.g. "looks+2.4" / "looks-2" in reasons
 ```
 
-Notes: the bonus is capped at +3 and only nudges ranking. If anchors/model/deps are
-missing the scorer skips it silently — nothing breaks.
+Notes: bonus is capped at +3 / penalty -2 — a ranking nudge, never a gate. Adds a CLIP
+embed per candidate (~1s each on the Pi 5; fine on a 30-min cycle). If model/anchors/deps
+are missing the scorer skips it silently. Rebuild positives anytime collection grows:
+`python scripts/build_taste_anchors.py --collection "E:\WATCHES\COLLECTION"`.
 
 ## 3. Tailscale (private access from anywhere)
 
