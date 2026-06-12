@@ -371,20 +371,22 @@ function locBadge(cc){
 function costParts(item){
   const price = Number(item.price || 0);
   const ship = Number(item.shipping_cost || 0);
+  const shipKnown = Boolean(Number(item.shipping_known || 0));
   const imp = Number(item.import_charges || 0);
+  const importKnown = Boolean(Number(item.import_charges_known || 0));
   const cc = String(item.country || '').toUpperCase();
   const foreign = cc && cc !== 'US';
-  return { price, ship, imp, cc, foreign, importTbd: foreign && !imp, total: price + ship + imp };
+  return { price, ship, shipKnown, imp, importKnown, cc, foreign, importTbd: foreign && !importKnown, total: price + ship + imp };
 }
 function landedNumber(item){ return costParts(item).total; }
 function priceStack(item, kind, bids){
   const c = costParts(item);
-  const hasKnownAddons = c.ship > 0 || c.imp > 0;
+  const hasKnownAddons = c.shipKnown || c.imp > 0;
   const main = hasKnownAddons ? c.total : c.price;
   const label = hasKnownAddons ? 'landed' : `${kind}${bids}`;
   const lines = [];
   if (hasKnownAddons) lines.push(`item ${shortMoney(c.price)}`);
-  lines.push(c.ship > 0 ? `ship ${shortMoney(c.ship)}` : 'ship TBD');
+  lines.push(c.shipKnown ? (c.ship > 0 ? `ship ${shortMoney(c.ship)}` : 'ship free') : 'ship TBD');
   if (c.imp > 0) lines.push(`import ${shortMoney(c.imp)}`);
   else if (c.importTbd) lines.push('import TBD');
   const extra = lines.length ? `<span class="costLine${c.importTbd ? ' costWarn' : ''}">${lines.join(' · ')}</span>` : '';

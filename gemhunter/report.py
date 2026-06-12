@@ -46,20 +46,22 @@ def _origin_badge(r: dict) -> str:
 def _cost_badge(r: dict) -> str:
     price = float(r.get("price") or 0)
     ship = float(r.get("shipping_cost") or 0)
+    ship_known = bool(r.get("shipping_known"))
     imp = float(r.get("import_charges") or 0)
+    import_known = bool(r.get("import_charges_known"))
     cc = (r.get("country") or "").upper()
     foreign = cc and cc != "US"
-    if not ship and not imp and not foreign:
-        return '<small class="cost">ship included/unknown</small>'
+    if not ship_known and not imp and not foreign:
+        return '<small class="cost">ship TBD</small>'
     total = price + ship + imp
     parts = []
-    if ship:
-        parts.append(f"ship +${ship:,.0f}")
+    if ship_known:
+        parts.append(f"ship ${ship:,.0f}" if ship else "ship free")
     else:
-        parts.append("ship unknown")
+        parts.append("ship TBD")
     if imp:
-        parts.append(f"import +${imp:,.0f}")
-    elif foreign:
+        parts.append(f"import ${imp:,.0f}")
+    elif foreign and not import_known:
         parts.append("import TBD")
     return f'<small class="cost">landed ${total:,.0f} · {html.escape(" · ".join(parts))}</small>'
 

@@ -43,7 +43,9 @@ CREATE TABLE IF NOT EXISTS listings (
     title            TEXT,
     price            REAL,
     shipping_cost    REAL DEFAULT 0,
+    shipping_known   INTEGER DEFAULT 0,
     import_charges   REAL DEFAULT 0,
+    import_charges_known INTEGER DEFAULT 0,
     currency         TEXT,
     buying_option    TEXT,
     bid_count        INTEGER,
@@ -81,7 +83,9 @@ CREATE TABLE IF NOT EXISTS listing_observations (
     search_name     TEXT,
     price           REAL,
     shipping_cost   REAL DEFAULT 0,
+    shipping_known  INTEGER DEFAULT 0,
     import_charges  REAL DEFAULT 0,
+    import_charges_known INTEGER DEFAULT 0,
     currency        TEXT,
     buying_option   TEXT,
     bid_count       INTEGER,
@@ -142,7 +146,9 @@ class Storage:
             ("fingerprint", "TEXT"),
             ("country", "TEXT"),
             ("shipping_cost", "REAL DEFAULT 0"),
+            ("shipping_known", "INTEGER DEFAULT 0"),
             ("import_charges", "REAL DEFAULT 0"),
+            ("import_charges_known", "INTEGER DEFAULT 0"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
@@ -156,10 +162,14 @@ class Storage:
             self._conn.execute("ALTER TABLE listing_observations ADD COLUMN country TEXT")
         except sqlite3.OperationalError:
             pass
-        for col in ("shipping_cost", "import_charges"):
+        for col, decl in [
+            ("shipping_cost", "REAL DEFAULT 0"),
+            ("shipping_known", "INTEGER DEFAULT 0"),
+            ("import_charges", "REAL DEFAULT 0"),
+            ("import_charges_known", "INTEGER DEFAULT 0"),
+        ]:
             try:
-                self._conn.execute(
-                    f"ALTER TABLE listing_observations ADD COLUMN {col} REAL DEFAULT 0")
+                self._conn.execute(f"ALTER TABLE listing_observations ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass
         self._backfill_fingerprints()
@@ -192,18 +202,20 @@ class Storage:
         self._conn.execute(
             """INSERT OR REPLACE INTO listings
                (item_id, search_name, title, price, currency, buying_option, bid_count,
-                shipping_cost, import_charges, seller_username, seller_pct, seller_score,
+                shipping_cost, shipping_known, import_charges, import_charges_known,
+                seller_username, seller_pct, seller_score,
                 condition, country, url, image_url,
                 score, opportunity, confidence, stream, mode, reasons, risk_tags,
                 action_note, rejected, reject_reason, fingerprint, hidden, saved,
                 feedback_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
                    COALESCE((SELECT first_seen FROM listings WHERE item_id = ?), ?), ?)""",
             (l.item_id, l.search_name, l.title, l.price, l.currency, l.buying_option,
-             l.bid_count, getattr(l, "shipping_cost", 0.0), getattr(l, "import_charges", 0.0),
+             l.bid_count, getattr(l, "shipping_cost", 0.0), int(getattr(l, "shipping_known", False)),
+             getattr(l, "import_charges", 0.0), int(getattr(l, "import_charges_known", False)),
              l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
              l.condition, l.country, l.url, l.image_url, result.score,
              getattr(result, "opportunity", 0.0), getattr(result, "confidence", 0.0),
@@ -221,14 +233,35 @@ class Storage:
         self._conn.execute(
             """INSERT INTO listing_observations
                (item_id, observed_at, search_name, price, currency, buying_option,
-                shipping_cost, import_charges, bid_count, score, stream, country, fingerprint)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                shipping_cost, shipping_known, import_charges, import_charges_known,
+                bid_count, score, stream, country, fingerprint)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (listing.item_id, now, listing.search_name, listing.price, listing.currency,
              listing.buying_option, getattr(listing, "shipping_cost", 0.0),
-             getattr(listing, "import_charges", 0.0), listing.bid_count,
+             int(getattr(listing, "shipping_known", False)),
+             getattr(listing, "import_charges", 0.0),
+             int(getattr(listing, "import_charges_known", False)), listing.bid_count,
              getattr(result, "score", None), getattr(result, "stream", None),
              getattr(listing, "country", ""),
              listing_fingerprint(listing)),
+        )
+        self._conn.execute(
+            """UPDATE listings
+               SET price = ?,
+                   shipping_cost = CASE WHEN ? THEN ? ELSE shipping_cost END,
+                   shipping_known = CASE WHEN ? THEN 1 ELSE shipping_known END,
+                   import_charges = CASE WHEN ? THEN ? ELSE import_charges END,
+                   import_charges_known = CASE WHEN ? THEN 1 ELSE import_charges_known END,
+                   bid_count = ?,
+                   country = COALESCE(NULLIF(?, ''), country),
+                   last_seen = ?
+               WHERE item_id = ?""",
+            (listing.price,
+             int(getattr(listing, "shipping_known", False)), getattr(listing, "shipping_cost", 0.0),
+             int(getattr(listing, "shipping_known", False)),
+             int(getattr(listing, "import_charges_known", False)), getattr(listing, "import_charges", 0.0),
+             int(getattr(listing, "import_charges_known", False)),
+             listing.bid_count, getattr(listing, "country", ""), now, listing.item_id),
         )
         self._conn.commit()
 

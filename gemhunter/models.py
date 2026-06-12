@@ -14,7 +14,9 @@ class Listing:
     buying_option: str          # "FIXED_PRICE" or "AUCTION"
     url: str
     shipping_cost: float = 0.0
+    shipping_known: bool = False
     import_charges: float = 0.0
+    import_charges_known: bool = False
     condition: str = ""
     search_name: str = ""       # which of your searches surfaced it
 

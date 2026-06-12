@@ -15,14 +15,16 @@ def _money(n: float) -> str:
 
 def _cost_note(listing: Listing) -> str:
     ship = float(getattr(listing, "shipping_cost", 0.0) or 0.0)
+    ship_known = bool(getattr(listing, "shipping_known", False))
     imp = float(getattr(listing, "import_charges", 0.0) or 0.0)
+    import_known = bool(getattr(listing, "import_charges_known", False))
     total = listing.price + ship + imp
     bits = []
-    if ship:
-        bits.append(f"ship +{_money(ship)}")
+    if ship_known:
+        bits.append(f"ship {_money(ship)}" if ship else "ship free")
     if imp:
-        bits.append(f"import +{_money(imp)}")
-    elif (listing.country or "").upper() and (listing.country or "").upper() != "US":
+        bits.append(f"import {_money(imp)}")
+    elif (listing.country or "").upper() and (listing.country or "").upper() != "US" and not import_known:
         bits.append("import TBD")
     if not bits:
         return ""

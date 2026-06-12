@@ -110,11 +110,13 @@ class EbayClient:
             return listing
         listing.aspects = {a.get("name"): a.get("value")
                            for a in d.get("localizedAspects", []) if a.get("name")}
-        shipping_cost, import_charges = self._shipping_amounts(d)
-        if shipping_cost:
+        shipping_cost, shipping_known, import_charges, import_known = self._shipping_amounts(d)
+        if shipping_known:
             listing.shipping_cost = shipping_cost
-        if import_charges:
+            listing.shipping_known = True
+        if import_known:
             listing.import_charges = import_charges
+            listing.import_charges_known = True
         progs = d.get("qualifiedPrograms", []) or []
         listing.auth_guarantee = bool(d.get("authenticityGuarantee")) or \
             ("AUTHENTICITY_GUARANTEE" in progs)
@@ -130,21 +132,23 @@ class EbayClient:
             return 0.0
 
     @classmethod
-    def _shipping_amounts(cls, item: dict) -> tuple[float, float]:
-        """Return the cheapest known shipping/import amounts from eBay shippingOptions."""
+    def _shipping_amounts(cls, item: dict) -> tuple[float, bool, float, bool]:
+        """Return the cheapest shipping/import option and whether eBay actually provided it."""
         shipping_options = item.get("shippingOptions", []) or []
         if not isinstance(shipping_options, list):
-            return 0.0, 0.0
+            return 0.0, False, 0.0, False
         pairs = []
         for option in shipping_options:
             if not isinstance(option, dict):
                 continue
-            ship = cls._money_value(option.get("shippingCost"))
-            imp = cls._money_value(option.get("importCharges"))
-            pairs.append((ship, imp))
+            shipping_known = isinstance(option.get("shippingCost"), dict)
+            import_known = isinstance(option.get("importCharges"), dict)
+            ship = cls._money_value(option.get("shippingCost")) if shipping_known else 0.0
+            imp = cls._money_value(option.get("importCharges")) if import_known else 0.0
+            pairs.append((ship, shipping_known, imp, import_known))
         if not pairs:
-            return 0.0, 0.0
-        return min(pairs, key=lambda pair: pair[0] + pair[1])
+            return 0.0, False, 0.0, False
+        return min(pairs, key=lambda pair: pair[0] + pair[2])
 
     @staticmethod
     def _parse(payload: dict, search_name: str) -> list[Listing]:
@@ -161,7 +165,7 @@ class EbayClient:
             except (TypeError, ValueError):
                 pct = 0.0
             loc = item.get("itemLocation", {}) or {}
-            shipping_cost, import_charges = EbayClient._shipping_amounts(item)
+            shipping_cost, shipping_known, import_charges, import_known = EbayClient._shipping_amounts(item)
             listings.append(
                 Listing(
                     item_id=item.get("itemId", ""),
@@ -171,7 +175,9 @@ class EbayClient:
                     buying_option="AUCTION" if is_auction else "FIXED_PRICE",
                     url=item.get("itemWebUrl", ""),
                     shipping_cost=shipping_cost,
+                    shipping_known=shipping_known,
                     import_charges=import_charges,
+                    import_charges_known=import_known,
                     condition=item.get("condition", ""),
                     search_name=search_name,
                     seller_username=seller.get("username", ""),
