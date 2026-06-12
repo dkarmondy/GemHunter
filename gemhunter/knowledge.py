@@ -48,6 +48,16 @@ JAPANESE_EXCEPTIONS = ["grand seiko", "king seiko", "credor"]  # vintage only, a
 
 AGE_FLOOR_YEAR = 1960  # nothing older (too fragile to service)
 
+# ---- Origin country (ISO codes from eBay itemLocation) ----
+# Hard-cut: markets he never wants to buy from (fakes, fees, shipping risk).
+BLOCKED_COUNTRIES = {"IN", "CN", "HK", "TH", "PK", "BD", "UA", "RU", "TR", "BR"}
+# US = home (no fees). Outside the US he accepts these mature dealer markets.
+PREFERRED_COUNTRIES = {"JP", "DE", "GB", "UK", "FR"}
+# High-humidity markets: flag a moisture / ruined-box-and-papers caution.
+HUMID_COUNTRIES = {"JP", "SG", "MY", "ID", "PH", "TW", "VN", "IN", "TH", "HK", "BR"}
+W_FOREIGN_PREF = -1    # preferred non-US market: still has import fees
+W_FOREIGN_OTHER = -3   # non-preferred non-US: fees + less-trusted market
+
 # ============================ TASTE SIGNALS ============================
 # Brands he hunts (Swiss vintage/neo-vintage + wishlist).
 TASTE_BRANDS = [

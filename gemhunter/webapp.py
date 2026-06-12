@@ -172,6 +172,10 @@ HTML = r"""<!doctype html>
     .learn{border-radius:999px;background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(134,239,172,.25);font-size:11px;font-weight:850;padding:3px 7px}
     .price{margin-left:auto;white-space:nowrap;font-size:15px;font-weight:950}
     .price small{display:block;text-align:right;color:var(--muted);font-size:11px;font-weight:700}
+    .loc{display:block;text-align:right;margin-top:2px;font-size:10px;font-weight:900;letter-spacing:0;color:#cbd5e1}
+    .loc.pref{color:#bae6fd}
+    .loc.warn{color:#fecaca}
+    .loc.humid{color:#fde68a}
     .title{display:block;color:var(--text);font-size:14px;font-weight:850;line-height:1.22;text-decoration:none;margin-bottom:7px}
     .reasons{color:#8bdcff;font-size:12px;font-weight:650;margin-bottom:5px}
     .judgment{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0}
@@ -270,6 +274,18 @@ const feed = $('feed'), inspectFeed = $('inspectFeed'), savedFeed = $('savedFeed
 
 function money(n){ return '$' + Number(n || 0).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function esc(s){ return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+const HUMID_CC = new Set(['JP','SG','MY','ID','PH','TW','VN','IN','TH','HK','BR']);
+const PREF_CC = new Set(['JP','DE','GB','UK','FR']);
+function flagEmoji(cc){ return cc.length===2 ? cc.replace(/./g, c => String.fromCodePoint(127397 + c.charCodeAt(0))) : ''; }
+function locBadge(cc){
+  cc = String(cc || '').toUpperCase();
+  if (!cc) return '';
+  if (cc === 'US') return '';
+  const humid = HUMID_CC.has(cc);
+  const cls = PREF_CC.has(cc) ? 'loc pref' : 'loc warn';
+  const note = humid ? ' · import fees · moisture' : ' · import fees';
+  return `<small class="${cls}${humid ? ' humid' : ''}">${flagEmoji(cc)} ${cc}${note}</small>`;
+}
 function activeCollection(){ return COLLECTIONS.find(c => c.id === active) || COLLECTIONS[0]; }
 function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1100); }
 function hardRefresh(){ window.location.href = window.location.pathname + '?v=' + Date.now(); }
@@ -390,7 +406,7 @@ function card(item, color){
   return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
     <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
     <div class="body">
-      <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}<span class="price">${money(item.price)}<small>${kind}${bids}</small></span></div>
+      <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}<span class="price">${money(item.price)}<small>${kind}${bids}</small>${locBadge(item.country)}</span></div>
       <a class="title" href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <div class="reasons">${esc(item.reasons)}</div>
       <div class="judgment"><div class="meter"><b>${opp}</b><span>Opportunity</span></div><div class="meter"><b>${conf}</b><span>Confidence</span></div></div>

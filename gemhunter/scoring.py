@@ -125,6 +125,13 @@ def _seller_confidence(l: Listing) -> float:
 
 def _risk_tags(t: str, asp: dict, listing: Listing, stream: str, year: int | None) -> list[str]:
     risks = []
+    cc = (listing.country or "").upper()
+    if cc and cc != "US":
+        risks.append("import-fees")
+        if cc not in K.PREFERRED_COUNTRIES:
+            risks.append("foreign-market")
+    if cc in K.HUMID_COUNTRIES:
+        risks.append("humidity/moisture")
     if listing.seller_feedback_score < 100:
         risks.append("seller-count")
     if listing.seller_feedback_pct and listing.seller_feedback_pct < 99:
@@ -226,8 +233,11 @@ def score_listing(listing: Listing) -> Score:
     ok, why = _seller_gate(listing)
     if not ok:
         return _reject(r, why)
+    if listing.country and listing.country in K.BLOCKED_COUNTRIES:
+        return _reject(r, f"blocked country: {listing.country}")
     if rare_hit:
-        return _score_rare(r, t, blob, asp, movement_asp, features_asp, brand_asp, rare_hit, year)
+        return _apply_country(_score_rare(r, t, blob, asp, movement_asp, features_asp,
+                                          brand_asp, rare_hit, year))
 
     # ----------------------- STREAM SELECT -----------------------
     # A project = title says as-is/for-parts, OR eBay condition is "For parts or not working".
@@ -235,8 +245,45 @@ def score_listing(listing: Listing) -> Score:
     project = _first_hit(t, K.PROJECT_KEYWORDS) or \
         ("for parts (condition)" if "parts" in cond else None)
     if project:
-        return _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project)
-    return _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp)
+        return _apply_country(
+            _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project))
+    return _apply_country(
+        _score_collector(r, t, blob, asp, movement_asp, features_asp, brand_asp))
+
+
+def _apply_country(r: Score) -> Score:
+    """Import-fee penalty + moisture tag based on the listing's origin country."""
+    if r.rejected:
+        return r
+    cc = (r.listing.country or "").upper()
+    if cc and cc != "US":
+        preferred = cc in K.PREFERRED_COUNTRIES
+        penalty = K.W_FOREIGN_PREF if preferred else K.W_FOREIGN_OTHER
+        r.score += penalty
+        r.opportunity = round(_clamp(r.opportunity + penalty * 4.0), 1)
+        r.confidence = round(_clamp(r.confidence - (6.0 if preferred else 14.0)), 1)
+        r.reasons.append(f"{cc}+import")
+        if "import-fees" not in r.risk_tags:
+            r.risk_tags.append("import-fees")
+        if preferred:
+            if "preferred-market" not in r.risk_tags:
+                r.risk_tags.append("preferred-market")
+        elif "foreign-market" not in r.risk_tags:
+            r.risk_tags.append("foreign-market")
+        if r.action_note:
+            r.action_note += f" Confirm landed cost/import fees from {cc}."
+        else:
+            r.action_note = f"Confirm landed cost/import fees from {cc}."
+    if cc in K.HUMID_COUNTRIES:
+        r.reasons.append("humidity")
+        r.confidence = round(_clamp(r.confidence - 4.0), 1)
+        if "humidity/moisture" not in r.risk_tags:
+            r.risk_tags.append("humidity/moisture")
+        if r.action_note:
+            r.action_note += " Inspect dial/movement for moisture and expect box/paper degradation."
+        else:
+            r.action_note = "Inspect dial/movement for moisture and expect box/paper degradation."
+    return r
 
 
 def _score_repair(r, t, asp, movement_asp, features_asp, brand_asp, project) -> Score:

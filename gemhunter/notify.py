@@ -9,6 +9,15 @@ from .models import Listing
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 
 
+def _origin_note(listing: Listing) -> str:
+    cc = (listing.country or "").upper()
+    if not cc or cc == "US":
+        return ""
+    humid = {"JP", "SG", "MY", "ID", "PH", "TW", "VN", "IN", "TH", "HK", "BR"}
+    moisture = " · moisture risk" if cc in humid else ""
+    return f"\norigin {cc} · import fees{moisture}"
+
+
 class Notifier:
     def __init__(self, user_key: str = "", api_token: str = ""):
         self.user_key = user_key
@@ -22,7 +31,7 @@ class Notifier:
     def _format(listing: Listing) -> tuple[str, str]:
         kind = "Auction" if listing.is_auction else "Buy It Now"
         title = f"Gem: {listing.search_name} — ${listing.price:,.0f}"
-        message = f"{listing.title}\n{kind} · ${listing.price:,.0f} {listing.currency}"
+        message = f"{listing.title}\n{kind} · ${listing.price:,.0f} {listing.currency}{_origin_note(listing)}"
         return title, message
 
     def send(self, listing: Listing) -> None:
@@ -38,7 +47,8 @@ class Notifier:
         seller = (f"\nseller {l.seller_feedback_pct:.0f}% ({l.seller_feedback_score})"
                   if l.seller_feedback_pct else "")
         message = (f"{l.title}\n"
-                   f"score {result.score:.0f} · {', '.join(result.reasons)}{seller}")
+                   f"score {result.score:.0f} · {', '.join(result.reasons)}"
+                   f"{_origin_note(l)}{seller}")
         self._dispatch(title, message, l.url)
 
     def _dispatch(self, title: str, message: str, url: str) -> None:

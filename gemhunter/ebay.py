@@ -131,6 +131,7 @@ class EbayClient:
                     seller_feedback_score=int(seller.get("feedbackScore") or 0),
                     item_location=", ".join(
                         x for x in [loc.get("city"), loc.get("country")] if x),
+                    country=(loc.get("country") or "").upper(),
                     image_url=(item.get("image", {}) or {}).get("imageUrl", ""),
                     bid_count=int(item.get("bidCount") or 0),
                 )

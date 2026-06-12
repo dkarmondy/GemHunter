@@ -21,6 +21,7 @@ class Listing:
     seller_feedback_pct: float = 0.0
     seller_feedback_score: int = 0
     item_location: str = ""
+    country: str = ""           # ISO code from itemLocation, e.g. US / JP / GB
     image_url: str = ""
     bid_count: int = 0
 
