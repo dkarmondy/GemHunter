@@ -164,14 +164,18 @@ HTML = r"""<!doctype html>
     .card{position:relative;display:grid;grid-template-columns:118px 1fr;gap:13px;background:rgba(16,26,45,.96);
       border:1px solid rgba(148,163,184,.16);border-radius:22px;overflow:hidden;color:inherit;text-decoration:none;box-shadow:0 10px 32px rgba(0,0,0,.18)}
     .card.saved{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 10px 32px rgba(0,0,0,.18)}
-    .thumb{height:132px;background:#08111f;display:grid;place-items:center}
-    .thumb img{width:118px;height:132px;object-fit:cover}
+    .media{background:#08111f;display:flex;flex-direction:column;min-height:100%}
+    .thumb{height:112px;background:#08111f;display:grid;place-items:center}
+    .thumb img{width:118px;height:112px;object-fit:cover}
     .body{padding:12px 12px 12px 0;min-width:0}
     .meta{display:flex;align-items:center;gap:7px;margin-bottom:6px}
     .score{border-radius:9px;background:var(--accent);color:#07111f;font-weight:950;padding:3px 8px;font-size:13px}
     .learn{border-radius:999px;background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(134,239,172,.25);font-size:11px;font-weight:850;padding:3px 7px}
-    .price{margin-left:auto;white-space:nowrap;font-size:15px;font-weight:950}
+    .price{margin-left:auto;white-space:nowrap;font-size:15px;font-weight:950;text-align:right;line-height:1.05}
+    .price b{display:block;font-size:16px}
     .price small{display:block;text-align:right;color:var(--muted);font-size:11px;font-weight:700}
+    .costLine{display:block;margin-top:2px;color:#aebed4;font-size:10px;font-weight:800}
+    .costWarn{color:#fbbf24}
     .loc{display:block;text-align:right;margin-top:2px;font-size:10px;font-weight:900;letter-spacing:0;color:#cbd5e1}
     .loc.pref{color:#bae6fd}
     .loc.warn{color:#fecaca}
@@ -184,6 +188,10 @@ HTML = r"""<!doctype html>
     .meter span{display:block;color:var(--muted);font-size:10px;font-weight:850;text-transform:uppercase;margin-top:3px}
     .risks{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
     .risk{border:1px solid rgba(251,113,133,.24);background:rgba(251,113,133,.1);color:#fecdd3;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850}
+    .factStack{display:flex;flex-wrap:wrap;gap:5px;padding:7px;background:#08111f;border-top:1px solid rgba(148,163,184,.1)}
+    .fact{border:1px solid rgba(148,163,184,.14);background:rgba(226,237,247,.06);color:#c8d4e6;border-radius:999px;padding:3px 6px;font-size:10px;font-weight:850;line-height:1}
+    .fact.warn{border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.1);color:#fde68a}
+    .fact.good{border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.1);color:#bbf7d0}
     .groupNote{border:1px solid rgba(148,163,184,.16);background:rgba(226,237,247,.06);color:#dbe7f5;border-radius:12px;padding:7px 8px;font-size:11px;font-weight:800;margin:6px 0}
     .actionNote{color:#c8d4e6;font-size:12px;line-height:1.25;margin:6px 0 3px}
     .seller{color:var(--muted);font-size:12px}
@@ -216,7 +224,7 @@ HTML = r"""<!doctype html>
     .aboutArrow{color:#64748b;font-weight:950}
     .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#e6edf7;color:#07111f;padding:9px 13px;border-radius:999px;font-weight:900;opacity:0;transition:opacity .18s;z-index:50}
     .toast.show{opacity:1}
-    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:124px}h1{font-size:38px}.mode{font-size:10px}.aboutTitle{font-size:28px}.aboutSheet{padding:16px}}
+    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:112px}h1{font-size:38px}.mode{font-size:10px}.aboutTitle{font-size:28px}.aboutSheet{padding:16px}}
   </style>
 </head>
 <body>
@@ -342,6 +350,12 @@ const feed = $('feed'), inspectFeed = $('inspectFeed'), savedFeed = $('savedFeed
 
 function money(n){ return '$' + Number(n || 0).toLocaleString(undefined,{maximumFractionDigits:0}); }
 function esc(s){ return String(s || '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function shortMoney(n){
+  n = Number(n || 0);
+  if (n >= 1000000) return '$' + (n / 1000000).toFixed(n >= 10000000 ? 0 : 1) + 'm';
+  if (n >= 10000) return '$' + Math.round(n / 1000) + 'k';
+  return money(n);
+}
 const HUMID_CC = new Set(['JP','SG','MY','ID','PH','TW','VN','IN','TH','HK','BR']);
 const PREF_CC = new Set(['JP','DE','GB','UK','FR']);
 function flagEmoji(cc){ return cc.length===2 ? cc.replace(/./g, c => String.fromCodePoint(127397 + c.charCodeAt(0))) : ''; }
@@ -353,6 +367,40 @@ function locBadge(cc){
   const cls = PREF_CC.has(cc) ? 'loc pref' : 'loc warn';
   const note = humid ? ' · import fees · moisture' : ' · import fees';
   return `<small class="${cls}${humid ? ' humid' : ''}">${flagEmoji(cc)} ${cc}${note}</small>`;
+}
+function costParts(item){
+  const price = Number(item.price || 0);
+  const ship = Number(item.shipping_cost || 0);
+  const imp = Number(item.import_charges || 0);
+  const cc = String(item.country || '').toUpperCase();
+  const foreign = cc && cc !== 'US';
+  return { price, ship, imp, cc, foreign, importTbd: foreign && !imp, total: price + ship + imp };
+}
+function landedNumber(item){ return costParts(item).total; }
+function priceStack(item, kind, bids){
+  const c = costParts(item);
+  const hasKnownAddons = c.ship > 0 || c.imp > 0;
+  const main = hasKnownAddons ? c.total : c.price;
+  const label = hasKnownAddons ? 'landed est.' : `${kind}${bids}`;
+  const lines = [];
+  if (hasKnownAddons) lines.push(`item ${shortMoney(c.price)}`);
+  lines.push(c.ship > 0 ? `ship +${shortMoney(c.ship)}` : 'ship included/unknown');
+  if (c.imp > 0) lines.push(`import +${shortMoney(c.imp)}`);
+  else if (c.importTbd) lines.push('import TBD');
+  const extra = lines.length ? `<span class="costLine${c.importTbd ? ' costWarn' : ''}">${lines.join(' · ')}</span>` : '';
+  return `<span class="price"><b>${money(main)}</b><small>${label}</small>${extra}${locBadge(item.country)}</span>`;
+}
+function factChips(item){
+  const c = costParts(item);
+  const risks = String(item.risk_tags || '');
+  const reasons = String(item.reasons || '');
+  const chips = [];
+  if (item.seller_pct) chips.push(`<span class="fact good">seller ${Math.round(item.seller_pct)}%</span>`);
+  if (item.buying_option === 'AUCTION' && item.bid_count) chips.push(`<span class="fact">${item.bid_count} bids</span>`);
+  if (reasons.includes('auth-guarantee')) chips.push('<span class="fact good">auth</span>');
+  if (c.foreign) chips.push(`<span class="fact warn">${c.cc} import</span>`);
+  if (risks.includes('humidity/moisture')) chips.push('<span class="fact warn">moisture</span>');
+  return chips.slice(0, 3).join('');
 }
 function activeCollection(){ return COLLECTIONS.find(c => c.id === active) || COLLECTIONS[0]; }
 function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1100); }
@@ -445,14 +493,14 @@ function filters(){
 function applyFilters(){
   const f = filters();
   let rows = [...items];
-  if (f.maxPrice) rows = rows.filter(r => Number(r.price || 0) <= f.maxPrice);
+  if (f.maxPrice) rows = rows.filter(r => landedNumber(r) <= f.maxPrice);
   if (f.minSeller) rows = rows.filter(r => Number(r.seller_pct || 0) >= f.minSeller);
   if (f.minScore) rows = rows.filter(r => Number(r.smart_score || r.score || 0) >= f.minScore);
   if (f.auctionOnly) rows = rows.filter(r => r.buying_option === 'AUCTION');
   if (f.savedOnly) rows = rows.filter(r => r.saved);
   rows.sort((a,b) => {
-    if (f.sortBy === 'priceAsc') return Number(a.price||0) - Number(b.price||0);
-    if (f.sortBy === 'priceDesc') return Number(b.price||0) - Number(a.price||0);
+    if (f.sortBy === 'priceAsc') return landedNumber(a) - landedNumber(b);
+    if (f.sortBy === 'priceDesc') return landedNumber(b) - landedNumber(a);
     if (f.sortBy === 'seller') return Number(b.seller_pct||0) - Number(a.seller_pct||0);
     if (f.sortBy === 'opportunity') return Number(b.opportunity||0) - Number(a.opportunity||0);
     if (f.sortBy === 'confidence') return Number(b.confidence||0) - Number(a.confidence||0);
@@ -475,10 +523,14 @@ function card(item, color){
   const riskHtml = risks.length ? `<div class="risks">${risks.map(r => `<span class="risk">${esc(r)}</span>`).join('')}</div>` : '';
   const groupNote = item.relist_group_summary ? `<div class="groupNote">${esc(item.relist_group_summary)}</div>` : '';
   const action = item.action_note ? `<div class="actionNote">${esc(item.action_note)}</div>` : '';
+  const facts = factChips(item);
   return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
-    <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
+    <div class="media">
+      <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
+      ${facts ? `<div class="factStack">${facts}</div>` : ''}
+    </div>
     <div class="body">
-      <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}<span class="price">${money(item.price)}<small>${kind}${bids}</small>${locBadge(item.country)}</span></div>
+      <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}${priceStack(item, kind, bids)}</div>
       <a class="title" href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <div class="reasons">${esc(item.reasons)}</div>
       <div class="judgment"><div class="meter" title="How worth inspecting this is for your taste; not a price-comp verdict yet."><b>${opp}</b><span>Opportunity</span></div><div class="meter" title="How much the listing context supports trusting the signal."><b>${conf}</b><span>Confidence</span></div></div>

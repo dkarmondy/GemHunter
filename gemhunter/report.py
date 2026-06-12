@@ -43,6 +43,27 @@ def _origin_badge(r: dict) -> str:
     return f'<small class="origin">{html.escape(cc)} · {note}</small>'
 
 
+def _cost_badge(r: dict) -> str:
+    price = float(r.get("price") or 0)
+    ship = float(r.get("shipping_cost") or 0)
+    imp = float(r.get("import_charges") or 0)
+    cc = (r.get("country") or "").upper()
+    foreign = cc and cc != "US"
+    if not ship and not imp and not foreign:
+        return '<small class="cost">ship included/unknown</small>'
+    total = price + ship + imp
+    parts = []
+    if ship:
+        parts.append(f"ship +${ship:,.0f}")
+    else:
+        parts.append("ship unknown")
+    if imp:
+        parts.append(f"import +${imp:,.0f}")
+    elif foreign:
+        parts.append("import TBD")
+    return f'<small class="cost">landed ${total:,.0f} · {html.escape(" · ".join(parts))}</small>'
+
+
 def _card(r: dict, color: str) -> str:
     kind = "Auction" if r["buying_option"] == "AUCTION" else "BIN"
     bids = f" · {r['bid_count']} bids" if r["buying_option"] == "AUCTION" and r["bid_count"] else ""
@@ -55,7 +76,7 @@ def _card(r: dict, color: str) -> str:
       <div class="body">
         <div class="row1">
           <span class="score" style="background:{color}">{r['score']:.0f}</span>
-          <span class="price">${r['price']:,.0f}<small> {kind}{bids}</small>{_origin_badge(r)}</span>
+          <span class="price">${r['price']:,.0f}<small> {kind}{bids}</small>{_cost_badge(r)}{_origin_badge(r)}</span>
         </div>
         <div class="title">{html.escape(r['title'] or '')}</div>
         <div class="reasons">{html.escape(r['reasons'] or '')}</div>
@@ -99,6 +120,7 @@ h1{font-size:38px;font-weight:800;letter-spacing:-1px;margin:0;
 .score{font-weight:800;font-size:15px;border-radius:7px;padding:2px 9px;color:#0b1220}
 .price{margin-left:auto;font-weight:700;font-size:15px}
 .price small{color:#94a3b8;font-weight:400}
+.price .cost{display:block;text-align:right;color:#cbd5e1;font-size:11px;font-weight:700}
 .price .origin{display:block;text-align:right;color:#fbbf24;font-size:11px;font-weight:700}
 .title{font-weight:600;margin-bottom:4px}
 .reasons{color:#7dd3fc;font-size:12.5px;margin-bottom:3px}

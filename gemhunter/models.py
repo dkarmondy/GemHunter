@@ -13,6 +13,8 @@ class Listing:
     currency: str
     buying_option: str          # "FIXED_PRICE" or "AUCTION"
     url: str
+    shipping_cost: float = 0.0
+    import_charges: float = 0.0
     condition: str = ""
     search_name: str = ""       # which of your searches surfaced it
 

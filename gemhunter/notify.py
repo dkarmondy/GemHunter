@@ -9,6 +9,26 @@ from .models import Listing
 PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
 
 
+def _money(n: float) -> str:
+    return f"${n:,.0f}"
+
+
+def _cost_note(listing: Listing) -> str:
+    ship = float(getattr(listing, "shipping_cost", 0.0) or 0.0)
+    imp = float(getattr(listing, "import_charges", 0.0) or 0.0)
+    total = listing.price + ship + imp
+    bits = []
+    if ship:
+        bits.append(f"ship +{_money(ship)}")
+    if imp:
+        bits.append(f"import +{_money(imp)}")
+    elif (listing.country or "").upper() and (listing.country or "").upper() != "US":
+        bits.append("import TBD")
+    if not bits:
+        return ""
+    return f"\nlanded est. {_money(total)} ({' · '.join(bits)})"
+
+
 def _origin_note(listing: Listing) -> str:
     cc = (listing.country or "").upper()
     if not cc or cc == "US":
@@ -31,7 +51,7 @@ class Notifier:
     def _format(listing: Listing) -> tuple[str, str]:
         kind = "Auction" if listing.is_auction else "Buy It Now"
         title = f"Gem: {listing.search_name} — ${listing.price:,.0f}"
-        message = f"{listing.title}\n{kind} · ${listing.price:,.0f} {listing.currency}{_origin_note(listing)}"
+        message = f"{listing.title}\n{kind} · ${listing.price:,.0f} {listing.currency}{_cost_note(listing)}{_origin_note(listing)}"
         return title, message
 
     def send(self, listing: Listing) -> None:
@@ -48,7 +68,7 @@ class Notifier:
                   if l.seller_feedback_pct else "")
         message = (f"{l.title}\n"
                    f"score {result.score:.0f} · {', '.join(result.reasons)}"
-                   f"{_origin_note(l)}{seller}")
+                   f"{_cost_note(l)}{_origin_note(l)}{seller}")
         self._dispatch(title, message, l.url)
 
     def _dispatch(self, title: str, message: str, url: str) -> None:
