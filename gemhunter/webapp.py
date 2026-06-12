@@ -171,12 +171,12 @@ HTML = r"""<!doctype html>
     .meta{display:flex;align-items:center;gap:7px;margin-bottom:6px}
     .score{border-radius:9px;background:var(--accent);color:#07111f;font-weight:950;padding:3px 8px;font-size:13px}
     .learn{border-radius:999px;background:rgba(34,197,94,.12);color:#86efac;border:1px solid rgba(134,239,172,.25);font-size:11px;font-weight:850;padding:3px 7px}
-    .price{margin-left:auto;white-space:nowrap;font-size:15px;font-weight:950;text-align:right;line-height:1.05}
-    .price b{display:block;font-size:16px}
-    .price small{display:block;text-align:right;color:var(--muted);font-size:11px;font-weight:700}
-    .costLine{display:block;margin-top:2px;color:#aebed4;font-size:10px;font-weight:800}
+    .price{margin-left:auto;min-width:76px;max-width:118px;font-size:14px;font-weight:950;text-align:right;line-height:1.05;overflow-wrap:anywhere}
+    .price b{display:block;font-size:15px}
+    .price small{display:block;text-align:right;color:var(--muted);font-size:10px;font-weight:800}
+    .costLine{display:block;margin-top:3px;color:#aebed4;font-size:9.5px;font-weight:800;line-height:1.18}
     .costWarn{color:#fbbf24}
-    .loc{display:block;text-align:right;margin-top:2px;font-size:10px;font-weight:900;letter-spacing:0;color:#cbd5e1}
+    .loc{display:block;text-align:right;margin-top:3px;font-size:9.5px;font-weight:900;letter-spacing:0;color:#cbd5e1;line-height:1.15}
     .loc.pref{color:#bae6fd}
     .loc.warn{color:#fecaca}
     .loc.humid{color:#fde68a}
@@ -224,7 +224,7 @@ HTML = r"""<!doctype html>
     .aboutArrow{color:#64748b;font-weight:950}
     .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#e6edf7;color:#07111f;padding:9px 13px;border-radius:999px;font-weight:900;opacity:0;transition:opacity .18s;z-index:50}
     .toast.show{opacity:1}
-    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:112px}h1{font-size:38px}.mode{font-size:10px}.aboutTitle{font-size:28px}.aboutSheet{padding:16px}}
+    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:112px}.body{padding-right:9px}.price{max-width:102px;font-size:13px}.price b{font-size:14px}.costLine,.loc{font-size:9px}h1{font-size:38px}.mode{font-size:10px}.aboutTitle{font-size:28px}.aboutSheet{padding:16px}}
   </style>
 </head>
 <body>
@@ -381,11 +381,11 @@ function priceStack(item, kind, bids){
   const c = costParts(item);
   const hasKnownAddons = c.ship > 0 || c.imp > 0;
   const main = hasKnownAddons ? c.total : c.price;
-  const label = hasKnownAddons ? 'landed est.' : `${kind}${bids}`;
+  const label = hasKnownAddons ? 'landed' : `${kind}${bids}`;
   const lines = [];
   if (hasKnownAddons) lines.push(`item ${shortMoney(c.price)}`);
-  lines.push(c.ship > 0 ? `ship +${shortMoney(c.ship)}` : 'ship included/unknown');
-  if (c.imp > 0) lines.push(`import +${shortMoney(c.imp)}`);
+  lines.push(c.ship > 0 ? `ship ${shortMoney(c.ship)}` : 'ship TBD');
+  if (c.imp > 0) lines.push(`import ${shortMoney(c.imp)}`);
   else if (c.importTbd) lines.push('import TBD');
   const extra = lines.length ? `<span class="costLine${c.importTbd ? ' costWarn' : ''}">${lines.join(' · ')}</span>` : '';
   return `<span class="price"><b>${money(main)}</b><small>${label}</small>${extra}${locBadge(item.country)}</span>`;

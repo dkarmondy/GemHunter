@@ -16,7 +16,13 @@ from .storage import Storage
 
 def build_ebay_client(cfg: Config):
     if cfg.has_ebay_keys:
-        return EbayClient(cfg.ebay_client_id, cfg.ebay_client_secret, cfg.marketplace)
+        return EbayClient(
+            cfg.ebay_client_id,
+            cfg.ebay_client_secret,
+            cfg.marketplace,
+            cfg.buyer_country,
+            cfg.buyer_postal_code,
+        )
     print("[i] No eBay keys found — using sample listings (dry-run).")
     return SampleEbayClient()
 

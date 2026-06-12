@@ -10,6 +10,7 @@ import base64
 import json
 import time
 from pathlib import Path
+from urllib.parse import quote
 
 import requests
 
@@ -26,10 +27,19 @@ WRISTWATCH_CATEGORY = "31387"
 class EbayClient:
     """Real client against the eBay Browse API (active listings only)."""
 
-    def __init__(self, client_id: str, client_secret: str, marketplace: str = "EBAY_US"):
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str,
+        marketplace: str = "EBAY_US",
+        buyer_country: str = "",
+        buyer_postal_code: str = "",
+    ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.marketplace = marketplace
+        self.buyer_country = (buyer_country or "").upper()
+        self.buyer_postal_code = buyer_postal_code or ""
         self._token = ""
         self._token_expiry = 0.0
 
@@ -60,11 +70,18 @@ class EbayClient:
             parts.append("priceCurrency:USD")
         return ",".join(parts)
 
-    def search(self, search: Search) -> list[Listing]:
+    def _headers(self) -> dict:
         headers = {
             "Authorization": f"Bearer {self._get_token()}",
             "X-EBAY-C-MARKETPLACE-ID": self.marketplace,
         }
+        if self.buyer_country and self.buyer_postal_code:
+            loc = quote(f"country={self.buyer_country},zip={self.buyer_postal_code}", safe="")
+            headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={loc}"
+        return headers
+
+    def search(self, search: Search) -> list[Listing]:
+        headers = self._headers()
         params = {
             "q": search.query,
             "filter": self._build_filter(search),
@@ -80,10 +97,7 @@ class EbayClient:
         return self._parse(resp.json(), search.name)
 
     def get_item(self, item_id: str) -> dict:
-        headers = {
-            "Authorization": f"Bearer {self._get_token()}",
-            "X-EBAY-C-MARKETPLACE-ID": self.marketplace,
-        }
+        headers = self._headers()
         resp = requests.get(ITEM_URL + item_id, headers=headers, timeout=30)
         resp.raise_for_status()
         return resp.json()

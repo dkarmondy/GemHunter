@@ -25,6 +25,8 @@ class Config:
     poll_interval_seconds: int
     marketplace: str
     searches: list[Search]
+    buyer_country: str = ""
+    buyer_postal_code: str = ""
     min_score: float = 4.0          # only alert candidates scoring >= this
     alert_limit: int = 25           # max alerts per cycle
     enrich: bool = False            # call getItem on candidates for size/movement/etc.
@@ -59,6 +61,8 @@ def load_config(config_path: str | Path = "config.yaml") -> Config:
         poll_interval_seconds=int(raw.get("poll_interval_seconds", 1800)),
         marketplace=raw.get("marketplace", "EBAY_US"),
         searches=searches,
+        buyer_country=os.getenv("GEMHUNTER_BUYER_COUNTRY", raw.get("buyer_country", "")),
+        buyer_postal_code=os.getenv("GEMHUNTER_BUYER_POSTAL_CODE", raw.get("buyer_postal_code", "")),
         min_score=float(raw.get("min_score", 4.0)),
         alert_limit=int(raw.get("alert_limit", 25)),
         enrich=bool(raw.get("enrich", False)),
