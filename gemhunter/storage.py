@@ -46,6 +46,9 @@ CREATE TABLE IF NOT EXISTS listings (
     shipping_known   INTEGER DEFAULT 0,
     import_charges   REAL DEFAULT 0,
     import_charges_known INTEGER DEFAULT 0,
+    active           INTEGER DEFAULT 1,
+    item_end_date    TEXT,
+    inactive_reason  TEXT,
     currency         TEXT,
     buying_option    TEXT,
     bid_count        INTEGER,
@@ -86,6 +89,9 @@ CREATE TABLE IF NOT EXISTS listing_observations (
     shipping_known  INTEGER DEFAULT 0,
     import_charges  REAL DEFAULT 0,
     import_charges_known INTEGER DEFAULT 0,
+    active          INTEGER DEFAULT 1,
+    item_end_date   TEXT,
+    inactive_reason TEXT,
     currency        TEXT,
     buying_option   TEXT,
     bid_count       INTEGER,
@@ -149,6 +155,9 @@ class Storage:
             ("shipping_known", "INTEGER DEFAULT 0"),
             ("import_charges", "REAL DEFAULT 0"),
             ("import_charges_known", "INTEGER DEFAULT 0"),
+            ("active", "INTEGER DEFAULT 1"),
+            ("item_end_date", "TEXT"),
+            ("inactive_reason", "TEXT"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
@@ -167,6 +176,9 @@ class Storage:
             ("shipping_known", "INTEGER DEFAULT 0"),
             ("import_charges", "REAL DEFAULT 0"),
             ("import_charges_known", "INTEGER DEFAULT 0"),
+            ("active", "INTEGER DEFAULT 1"),
+            ("item_end_date", "TEXT"),
+            ("inactive_reason", "TEXT"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listing_observations ADD COLUMN {col} {decl}")
@@ -205,10 +217,11 @@ class Storage:
                 shipping_cost, shipping_known, import_charges, import_charges_known,
                 seller_username, seller_pct, seller_score,
                 condition, country, url, image_url,
+                active, item_end_date, inactive_reason,
                 score, opportunity, confidence, stream, mode, reasons, risk_tags,
                 action_note, rejected, reject_reason, fingerprint, hidden, saved,
                 feedback_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
@@ -217,7 +230,9 @@ class Storage:
              l.bid_count, getattr(l, "shipping_cost", 0.0), int(getattr(l, "shipping_known", False)),
              getattr(l, "import_charges", 0.0), int(getattr(l, "import_charges_known", False)),
              l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
-             l.condition, l.country, l.url, l.image_url, result.score,
+             l.condition, l.country, l.url, l.image_url,
+             int(getattr(l, "active", True)), getattr(l, "item_end_date", ""),
+             getattr(l, "inactive_reason", ""), result.score,
              getattr(result, "opportunity", 0.0), getattr(result, "confidence", 0.0),
              result.stream, result.mode, ", ".join(result.reasons),
              ", ".join(getattr(result, "risk_tags", [])), getattr(result, "action_note", ""),
@@ -234,13 +249,16 @@ class Storage:
             """INSERT INTO listing_observations
                (item_id, observed_at, search_name, price, currency, buying_option,
                 shipping_cost, shipping_known, import_charges, import_charges_known,
+                active, item_end_date, inactive_reason,
                 bid_count, score, stream, country, fingerprint)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (listing.item_id, now, listing.search_name, listing.price, listing.currency,
              listing.buying_option, getattr(listing, "shipping_cost", 0.0),
              int(getattr(listing, "shipping_known", False)),
              getattr(listing, "import_charges", 0.0),
-             int(getattr(listing, "import_charges_known", False)), listing.bid_count,
+             int(getattr(listing, "import_charges_known", False)),
+             int(getattr(listing, "active", True)), getattr(listing, "item_end_date", ""),
+             getattr(listing, "inactive_reason", ""), listing.bid_count,
              getattr(result, "score", None), getattr(result, "stream", None),
              getattr(listing, "country", ""),
              listing_fingerprint(listing)),
@@ -252,6 +270,9 @@ class Storage:
                    shipping_known = CASE WHEN ? THEN 1 ELSE shipping_known END,
                    import_charges = CASE WHEN ? THEN ? ELSE import_charges END,
                    import_charges_known = CASE WHEN ? THEN 1 ELSE import_charges_known END,
+                   active = ?,
+                   item_end_date = COALESCE(NULLIF(?, ''), item_end_date),
+                   inactive_reason = ?,
                    bid_count = ?,
                    country = COALESCE(NULLIF(?, ''), country),
                    last_seen = ?
@@ -261,21 +282,46 @@ class Storage:
              int(getattr(listing, "shipping_known", False)),
              int(getattr(listing, "import_charges_known", False)), getattr(listing, "import_charges", 0.0),
              int(getattr(listing, "import_charges_known", False)),
-             listing.bid_count, getattr(listing, "country", ""), now, listing.item_id),
+             int(getattr(listing, "active", True)), getattr(listing, "item_end_date", ""),
+             getattr(listing, "inactive_reason", ""), listing.bid_count,
+             getattr(listing, "country", ""), now, listing.item_id),
         )
         self._conn.commit()
+
+    def mark_unseen_inactive(self, seen_item_ids: set[str]) -> int:
+        """After a successful scan, mark listings not returned by active searches as no longer active."""
+        now = time.time()
+        if not seen_item_ids:
+            cur = self._conn.execute(
+                """UPDATE listings
+                   SET active = 0, inactive_reason = 'not returned by latest scan', last_seen = ?
+                   WHERE active = 1""",
+                (now,),
+            )
+            self._conn.commit()
+            return cur.rowcount
+        ids = sorted(seen_item_ids)
+        placeholders = ",".join("?" for _ in ids)
+        cur = self._conn.execute(
+            f"""UPDATE listings
+                SET active = 0, inactive_reason = 'not returned by latest scan', last_seen = ?
+                WHERE active = 1 AND item_id NOT IN ({placeholders})""",
+            (now, *ids),
+        )
+        self._conn.commit()
+        return cur.rowcount
 
     def top_gems(self, min_score: float = 0.0, limit: int = 200,
                  stream: str | None = None, include_hidden: bool = False) -> list[dict]:
         hidden_clause = "" if include_hidden else " AND hidden = 0"
         if stream:
             cur = self._conn.execute(
-                f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ? AND stream = ?{hidden_clause}
+                f"""SELECT * FROM listings WHERE active = 1 AND rejected = 0 AND score >= ? AND stream = ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, stream, limit))
         else:
             cur = self._conn.execute(
-                f"""SELECT * FROM listings WHERE rejected = 0 AND score >= ?{hidden_clause}
+                f"""SELECT * FROM listings WHERE active = 1 AND rejected = 0 AND score >= ?{hidden_clause}
                    ORDER BY score DESC, last_seen DESC LIMIT ?""",
                 (min_score, limit))
         return self._with_relist_groups([dict(r) for r in cur.fetchall()], collapse=True)
@@ -335,7 +381,7 @@ class Storage:
                       MAX(last_seen) AS latest_seen,
                       GROUP_CONCAT(item_id) AS item_ids
                FROM listings
-               WHERE rejected = 0 AND hidden = 0 AND fingerprint = ?""",
+               WHERE active = 1 AND rejected = 0 AND hidden = 0 AND fingerprint = ?""",
             (fp,),
         ).fetchone()
         n = int(summary["n"] or 1)
@@ -382,7 +428,7 @@ class Storage:
         for section_id, label, where, ordering in sections:
             rows = self._conn.execute(
                 f"""SELECT * FROM listings
-                    WHERE rejected = 0 AND hidden = 0 AND {where}
+                    WHERE active = 1 AND rejected = 0 AND hidden = 0 AND {where}
                     ORDER BY {ordering}
                     LIMIT ?""",
                 (per_section,),

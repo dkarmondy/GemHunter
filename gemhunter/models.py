@@ -17,6 +17,9 @@ class Listing:
     shipping_known: bool = False
     import_charges: float = 0.0
     import_charges_known: bool = False
+    active: bool = True
+    item_end_date: str = ""
+    inactive_reason: str = ""
     condition: str = ""
     search_name: str = ""       # which of your searches surfaced it
 

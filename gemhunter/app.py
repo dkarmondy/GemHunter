@@ -29,6 +29,8 @@ def build_ebay_client(cfg: Config):
 
 def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     candidates, seen_new, rejected = [], 0, 0
+    seen_item_ids: set[str] = set()
+    successful_searches = 0
 
     for search in cfg.searches:
         try:
@@ -36,7 +38,10 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
         except Exception as exc:                      # keep loop alive on a bad search
             print(f"[!] Search '{search.name}' failed: {exc}")
             continue
+        successful_searches += 1
         for listing in listings:
+            if listing.item_id:
+                seen_item_ids.add(listing.item_id)
             if not storage.is_new(listing.item_id):
                 storage.record_observation(listing)
                 continue                              # dedupe: never re-alert
@@ -73,6 +78,8 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
 
     for r in keep:
         storage.record_result(r)   # persist final (enriched + visual) scores
+
+    inactive = storage.mark_unseen_inactive(seen_item_ids) if successful_searches else 0
 
     alerted = keep[: cfg.alert_limit]
     for r in alerted:

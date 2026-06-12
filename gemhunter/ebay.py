@@ -9,6 +9,7 @@ from __future__ import annotations
 import base64
 import json
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote
 
@@ -120,6 +121,7 @@ class EbayClient:
         progs = d.get("qualifiedPrograms", []) or []
         listing.auth_guarantee = bool(d.get("authenticityGuarantee")) or \
             ("AUTHENTICITY_GUARANTEE" in progs)
+        listing.active, listing.item_end_date, listing.inactive_reason = self._availability(d)
         return listing
 
     @staticmethod
@@ -130,6 +132,29 @@ class EbayClient:
             return float(money.get("value") or money.get("convertedFromValue") or 0)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _parse_time(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _availability(cls, item: dict) -> tuple[bool, str, str]:
+        item_end_date = item.get("itemEndDate") or ""
+        end = cls._parse_time(item_end_date)
+        if end and end <= datetime.now(timezone.utc):
+            return False, item_end_date, "ended"
+        for availability in item.get("estimatedAvailabilities", []) or []:
+            if not isinstance(availability, dict):
+                continue
+            status = str(availability.get("estimatedAvailabilityStatus") or "").upper()
+            if status == "OUT_OF_STOCK":
+                return False, item_end_date, "out of stock"
+        return True, item_end_date, ""
 
     @classmethod
     def _shipping_amounts(cls, item: dict) -> tuple[float, bool, float, bool]:
@@ -166,6 +191,7 @@ class EbayClient:
                 pct = 0.0
             loc = item.get("itemLocation", {}) or {}
             shipping_cost, shipping_known, import_charges, import_known = EbayClient._shipping_amounts(item)
+            active, item_end_date, inactive_reason = EbayClient._availability(item)
             listings.append(
                 Listing(
                     item_id=item.get("itemId", ""),
@@ -178,6 +204,9 @@ class EbayClient:
                     shipping_known=shipping_known,
                     import_charges=import_charges,
                     import_charges_known=import_known,
+                    active=active,
+                    item_end_date=item_end_date,
+                    inactive_reason=inactive_reason,
                     condition=item.get("condition", ""),
                     search_name=search_name,
                     seller_username=seller.get("username", ""),

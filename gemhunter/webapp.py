@@ -164,6 +164,7 @@ HTML = r"""<!doctype html>
     .card{position:relative;display:grid;grid-template-columns:118px 1fr;gap:13px;background:rgba(16,26,45,.96);
       border:1px solid rgba(148,163,184,.16);border-radius:22px;overflow:hidden;color:inherit;text-decoration:none;box-shadow:0 10px 32px rgba(0,0,0,.18)}
     .card.saved{border-color:#facc15;box-shadow:0 0 0 1px rgba(250,204,21,.28),0 10px 32px rgba(0,0,0,.18)}
+    .card.ended{opacity:.74;border-color:rgba(148,163,184,.26);filter:saturate(.72)}
     .media{background:#08111f;display:flex;flex-direction:column;min-height:100%}
     .thumb{height:112px;background:#08111f;display:grid;place-items:center}
     .thumb img{width:118px;height:112px;object-fit:cover}
@@ -188,6 +189,7 @@ HTML = r"""<!doctype html>
     .meter span{display:block;color:var(--muted);font-size:10px;font-weight:850;text-transform:uppercase;margin-top:3px}
     .risks{display:flex;flex-wrap:wrap;gap:5px;margin:6px 0}
     .risk{border:1px solid rgba(251,113,133,.24);background:rgba(251,113,133,.1);color:#fecdd3;border-radius:999px;padding:3px 7px;font-size:10px;font-weight:850}
+    .statusBadge{display:inline-flex;align-items:center;gap:5px;border:1px solid rgba(251,191,36,.3);background:rgba(251,191,36,.1);color:#fde68a;border-radius:999px;padding:4px 8px;font-size:11px;font-weight:900;margin:0 0 7px}
     .factStack{display:flex;flex-wrap:wrap;gap:5px;padding:7px;background:#08111f;border-top:1px solid rgba(148,163,184,.1)}
     .fact{border:1px solid rgba(148,163,184,.14);background:rgba(226,237,247,.06);color:#c8d4e6;border-radius:999px;padding:3px 6px;font-size:10px;font-weight:850;line-height:1}
     .fact.warn{border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.1);color:#fde68a}
@@ -198,6 +200,7 @@ HTML = r"""<!doctype html>
     .actions{display:flex;gap:8px;margin-top:10px}
     .actions button{border:1px solid rgba(148,163,184,.18);background:#0b1425;color:var(--soft);border-radius:12px;padding:8px 10px;font-weight:900}
     .heart.saved{background:#facc15;color:#07111f;border-color:#facc15}
+    .removeSaved{background:#e6edf7!important;color:#07111f!important;border-color:#e6edf7!important}
     .less{color:#f8fafc;display:inline-flex;align-items:center;justify-content:center;min-width:38px}
     .less svg{width:17px;height:17px;display:block;stroke:currentColor}
     .empty{border:1px dashed rgba(148,163,184,.2);border-radius:22px;padding:26px 16px;color:var(--muted);text-align:center;background:rgba(15,23,42,.35)}
@@ -404,6 +407,12 @@ function factChips(item){
   if (risks.includes('humidity/moisture')) chips.push('<span class="fact warn">moisture</span>');
   return chips.slice(0, 3).join('');
 }
+function isActive(item){ return Number(item.active ?? 1) !== 0; }
+function inactiveLabel(item){
+  if (isActive(item)) return '';
+  const reason = String(item.inactive_reason || '').trim();
+  return reason ? `Ended / likely sold · ${reason}` : 'Ended / likely sold';
+}
 function activeCollection(){ return COLLECTIONS.find(c => c.id === active) || COLLECTIONS[0]; }
 function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1100); }
 function hardRefresh(){ window.location.href = window.location.pathname + '?v=' + Date.now(); }
@@ -512,6 +521,7 @@ function applyFilters(){
   feed.innerHTML = rows.length ? rows.map(r => card(r, activeCollection().color)).join('') : '<p class="empty">No watches match those filters.</p>';
 }
 function card(item, color){
+  const activeNow = isActive(item);
   const kind = item.buying_option === 'AUCTION' ? 'Auction' : 'BIN';
   const bids = item.buying_option === 'AUCTION' && item.bid_count ? ` · ${item.bid_count} bids` : '';
   const seller = item.seller_pct ? `${Math.round(item.seller_pct)}% (${Number(item.seller_score||0).toLocaleString()})` : '—';
@@ -526,13 +536,17 @@ function card(item, color){
   const groupNote = item.relist_group_summary ? `<div class="groupNote">${esc(item.relist_group_summary)}</div>` : '';
   const action = item.action_note ? `<div class="actionNote">${esc(item.action_note)}</div>` : '';
   const facts = factChips(item);
-  return `<article class="card ${item.saved ? 'saved' : ''}" style="--accent:${color}" data-id="${esc(item.item_id)}">
+  const ended = inactiveLabel(item);
+  const heartText = mode === 'saved' && !activeNow ? 'Remove' : (item.saved ? '♥ Hearted' : '♡ Heart');
+  const heartClass = mode === 'saved' && !activeNow ? 'removeSaved' : `heart ${item.saved ? 'saved' : ''}`;
+  return `<article class="card ${item.saved ? 'saved' : ''} ${activeNow ? '' : 'ended'}" style="--accent:${color}" data-id="${esc(item.item_id)}">
     <div class="media">
       <a class="thumb" href="${esc(item.url)}" target="_blank" rel="noopener">${img}</a>
       ${facts ? `<div class="factStack">${facts}</div>` : ''}
     </div>
     <div class="body">
       <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}${priceStack(item, kind, bids)}</div>
+      ${ended ? `<div class="statusBadge">${esc(ended)}</div>` : ''}
       <a class="title" href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <div class="reasons">${esc(item.reasons)}</div>
       <div class="judgment"><div class="meter" title="How worth inspecting this is for your taste; not a price-comp verdict yet."><b>${opp}</b><span>Opportunity</span></div><div class="meter" title="How much the listing context supports trusting the signal."><b>${conf}</b><span>Confidence</span></div></div>
@@ -541,7 +555,7 @@ function card(item, color){
       ${action}
       <div class="seller">seller ${seller} · ${esc(item.search_name)}</div>
       <div class="actions">
-        <button class="heart ${item.saved ? 'saved' : ''}" onclick="toggleSaved(event,'${esc(item.item_id)}',${item.saved ? 0 : 1})">${item.saved ? '♥ Hearted' : '♡ Heart'}</button>
+        <button class="${heartClass}" onclick="toggleSaved(event,'${esc(item.item_id)}',${item.saved ? 0 : 1})">${heartText}</button>
         <button class="less" aria-label="Less like this" onclick="hideItem(event,'${esc(item.item_id)}')"><svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V3"/><path d="M7 10.5 9.1 3H17v11h-5.2l-1.5 5.2c-.2.7-.8 1.2-1.6 1.2h-.4c-.8 0-1.4-.8-1.2-1.6L8.4 14H5.2c-1.2 0-2.1-1.1-1.8-2.3l1.3-5.2C5 5.6 5.8 5 6.7 5h2"/></svg></button>
       </div>
     </div>
