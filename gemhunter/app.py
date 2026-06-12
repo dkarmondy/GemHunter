@@ -58,12 +58,11 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     # A ranking nudge only (max +3), applied to the top candidates.
     if cfg.visual and keep and visual.is_available():
         for r in keep[: cfg.alert_limit * 2]:
-            sim = visual.similarity_from_url(r.listing.image_url)
-            b = visual.bonus(sim)
+            b = visual.bonus(visual.taste_margin(r.listing.image_url))
             if b:
                 r.score += b
                 r.opportunity = min(100.0, getattr(r, "opportunity", 0.0) + b * 4.0)
-                r.reasons.append(f"looks:{sim:.2f}(+{b:g})")
+                r.reasons.append(f"looks{b:+g}")
         keep.sort(key=lambda r: r.score, reverse=True)
 
     for r in keep:

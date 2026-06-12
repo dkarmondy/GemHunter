@@ -20,6 +20,9 @@ MODEL_URL = ("https://huggingface.co/Qdrant/clip-ViT-B-32-vision/"
 MODEL_PATH = Path(os.getenv("GEMHUNTER_CLIP_MODEL",
                             str(Path.home() / ".cache/gemhunter/clip-vit-b32.onnx")))
 ANCHORS_PATH = Path(os.getenv("GEMHUNTER_ANCHORS", "data/taste_anchors.npz"))
+# Negatives ship with the code (generic junk, not personal photos).
+NEGATIVES_PATH = Path(os.getenv("GEMHUNTER_NEGATIVES",
+                                str(Path(__file__).parent / "taste_negatives.npz")))
 
 # CLIP preprocessing constants
 _MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -27,7 +30,14 @@ _STD = (0.26862954, 0.26130258, 0.27577711)
 
 _session = None
 _anchors = None
+_neg = None
 _failed = False
+
+
+def _norm(emb):
+    import numpy as np
+    emb = emb.astype("float32")
+    return emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-8)
 
 
 def download_model(dest: Path = MODEL_PATH) -> Path:
@@ -40,21 +50,19 @@ def download_model(dest: Path = MODEL_PATH) -> Path:
 
 
 def _load():
-    global _session, _anchors, _failed
+    global _session, _anchors, _neg, _failed
     if _failed or _session is not None:
         return
     try:
         import numpy as np
         import onnxruntime as ort
-        if not MODEL_PATH.exists() or not ANCHORS_PATH.exists():
+        if not (MODEL_PATH.exists() and ANCHORS_PATH.exists() and NEGATIVES_PATH.exists()):
             _failed = True
             return
         _session = ort.InferenceSession(str(MODEL_PATH),
                                         providers=["CPUExecutionProvider"])
-        data = np.load(ANCHORS_PATH)
-        emb = data["embeddings"].astype("float32")
-        emb /= (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-8)
-        _anchors = emb
+        _anchors = _norm(np.load(ANCHORS_PATH)["embeddings"])
+        _neg = _norm(np.load(NEGATIVES_PATH)["embeddings"])
     except Exception as exc:
         print(f"[visual] disabled: {exc}")
         _failed = True
@@ -62,7 +70,7 @@ def _load():
 
 def is_available() -> bool:
     _load()
-    return _session is not None and _anchors is not None
+    return _session is not None and _anchors is not None and _neg is not None
 
 
 def embed_image(data: bytes):
@@ -85,8 +93,10 @@ def embed_image(data: bytes):
     return out / (np.linalg.norm(out) + 1e-8)
 
 
-def similarity_from_url(url: str, timeout: int = 20) -> float | None:
-    """Fetch a listing thumbnail and return taste similarity in [0,1], or None."""
+def taste_margin(url: str, timeout: int = 20) -> float | None:
+    """Contrastive taste signal: similarity-to-collection MINUS similarity-to-junk.
+    Positive => looks like his watches and unlike the junk. Returns None on failure.
+    """
     if not is_available() or not url:
         return None
     try:
@@ -95,19 +105,17 @@ def similarity_from_url(url: str, timeout: int = 20) -> float | None:
         resp = requests.get(url, timeout=timeout)
         resp.raise_for_status()
         emb = embed_image(resp.content)
-        sims = _anchors @ emb
-        k = min(5, len(sims))
-        return float(np.sort(sims)[-k:].mean())   # mean of top-5 nearest anchors
+        pos = float(np.sort(_anchors @ emb)[-5:].mean())
+        neg = float(np.sort(_neg @ emb)[-min(5, len(_neg)):].mean())
+        return pos - neg
     except Exception:
         return None
 
 
-def bonus(sim: float | None, max_bonus: float = 3.0) -> float:
-    """Map similarity to a score bonus. <0.55 ~ unlike his watches -> 0;
-    0.75+ ~ strongly his taste -> full bonus."""
-    if sim is None:
+def bonus(margin: float | None, max_bonus: float = 3.0, max_penalty: float = 2.0) -> float:
+    """Map the contrastive margin to a score nudge. margin ~0.02 -> 0,
+    ~0.09 -> full bonus, clearly-junk-looking (<0) -> small penalty."""
+    if margin is None:
         return 0.0
-    lo, hi = 0.55, 0.75
-    if sim <= lo:
-        return 0.0
-    return round(max_bonus * min(1.0, (sim - lo) / (hi - lo)), 1)
+    val = (margin - 0.02) / 0.07 * max_bonus
+    return round(max(-max_penalty, min(max_bonus, val)), 1)
