@@ -303,6 +303,14 @@ HTML = r"""<!doctype html>
         <p>Listings pass through hard cuts first: quartz, smartwatches, fashion brands, parts-only listings, redials, replicas, weak sellers, unwanted countries, disliked calibers, and obvious mismatch signals. The survivors get ranked by brand, model, caliber, size, box/papers, authenticity guarantee, seller trust, import risk, moisture risk, and repairability.</p>
       </div>
       <div class="aboutBlock">
+        <h3>Opportunity & Confidence</h3>
+        <ul class="aboutList">
+          <li><strong>Opportunity</strong> means “how worth inspecting this is for my taste,” not “guaranteed under market.” It rises with strong brand/model/caliber signals, serviceability, rarity, full-set/originality, and repair upside. It falls with risk tags.</li>
+          <li><strong>Confidence</strong> means “how much the listing context supports trusting the signal.” It rises with seller feedback, seller volume, box/papers, authenticity guarantee, and cleaner listing data. It falls for missing movement info, weak sellers, import/moisture risk, or other warning tags.</li>
+          <li><strong>Important:</strong> until sold-comps data is wired in, these numbers do not know whether a $179,950 Patek Cubitus is fairly priced. A 100/100 means high signal and low obvious listing risk. It does not mean buy this, and it does not mean cheap. Final judgment still requires comps, reference research, and your eye.</li>
+        </ul>
+      </div>
+      <div class="aboutBlock">
         <h3>How It Learns</h3>
         <p>Hearting a watch tells the app, “more like this.” The thumbs-down tells it, “less like this.” Those signals nudge future listings by title, search, reasons, and feedback terms so the feed slowly bends toward my revealed taste instead of staying a static rules list.</p>
       </div>
@@ -473,7 +481,7 @@ function card(item, color){
       <div class="meta"><span class="score">${Math.round(item.smart_score || item.score || 0)}</span>${learn}<span class="price">${money(item.price)}<small>${kind}${bids}</small>${locBadge(item.country)}</span></div>
       <a class="title" href="${esc(item.url)}" target="_blank" rel="noopener">${esc(item.title)}</a>
       <div class="reasons">${esc(item.reasons)}</div>
-      <div class="judgment"><div class="meter"><b>${opp}</b><span>Opportunity</span></div><div class="meter"><b>${conf}</b><span>Confidence</span></div></div>
+      <div class="judgment"><div class="meter" title="How worth inspecting this is for your taste; not a price-comp verdict yet."><b>${opp}</b><span>Opportunity</span></div><div class="meter" title="How much the listing context supports trusting the signal."><b>${conf}</b><span>Confidence</span></div></div>
       ${riskHtml}
       ${groupNote}
       ${action}
