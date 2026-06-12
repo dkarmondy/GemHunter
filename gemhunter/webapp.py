@@ -123,7 +123,7 @@ HTML = r"""<!doctype html>
     .toprow{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
     .eyebrow{font-size:12px;font-weight:750;color:#9fb0c9;letter-spacing:.02em}
     h1{font-size:42px;line-height:.95;margin:4px 0 0;font-weight:900;letter-spacing:-1.7px;
-      background:linear-gradient(90deg,#f8fafc,#7dd3fc 48%,#facc15);-webkit-background-clip:text;background-clip:text;color:transparent}
+      background:linear-gradient(90deg,#f8fafc,#7dd3fc 48%,#facc15);-webkit-background-clip:text;background-clip:text;color:transparent;cursor:pointer}
     .status{font-size:12px;color:var(--muted);margin-top:8px}
     .topActions{display:flex;gap:8px;padding-top:4px}
     .iconBtn{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);color:var(--text);
@@ -195,9 +195,28 @@ HTML = r"""<!doctype html>
     .empty{border:1px dashed rgba(148,163,184,.2);border-radius:22px;padding:26px 16px;color:var(--muted);text-align:center;background:rgba(15,23,42,.35)}
     .placeholder{margin-top:14px;border:1px solid rgba(148,163,184,.16);border-radius:24px;padding:22px;background:rgba(16,26,45,.86);box-shadow:var(--shadow)}
     .placeholder h2{font-size:26px}.placeholder p{color:var(--muted)}
+    .aboutBackdrop{position:fixed;inset:0;display:none;align-items:flex-end;justify-content:center;background:rgba(2,6,23,.66);backdrop-filter:blur(10px);z-index:80;padding:18px 12px}
+    .aboutBackdrop.open{display:flex}
+    .aboutSheet{width:min(720px,100%);max-height:min(86vh,760px);overflow:auto;background:linear-gradient(160deg,#111c30,#091222);border:1px solid rgba(148,163,184,.22);border-radius:26px 26px 22px 22px;box-shadow:0 26px 80px rgba(0,0,0,.52);padding:18px}
+    .aboutTop{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+    .aboutKicker{color:#93c5fd;font-size:12px;font-weight:900;text-transform:uppercase;letter-spacing:.08em}
+    .aboutTitle{font-size:31px;line-height:1;margin:4px 0 8px;font-weight:950;letter-spacing:-.8px}
+    .aboutLead{margin:0;color:#dbeafe;font-size:15px;line-height:1.36;font-weight:700}
+    .aboutClose{border:1px solid rgba(148,163,184,.22);background:#0b1425;color:#e6edf7;border-radius:14px;width:38px;height:38px;font-size:21px;line-height:1;font-weight:800}
+    .aboutGrid{display:grid;gap:10px}
+    .aboutBlock{border:1px solid rgba(148,163,184,.16);background:rgba(15,23,42,.62);border-radius:18px;padding:13px}
+    .aboutBlock h3{font-size:15px;margin:0 0 7px;font-weight:950;color:#f8fafc}
+    .aboutBlock p{margin:0;color:#aebed4;font-size:13px;line-height:1.4}
+    .aboutBlock b{color:#e6edf7}
+    .aboutList{display:grid;gap:7px;margin:0;padding:0;list-style:none}
+    .aboutList li{color:#aebed4;font-size:13px;line-height:1.35}
+    .aboutList strong{color:#e6edf7}
+    .aboutFormula{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+    .aboutPill{border:1px solid rgba(125,211,252,.22);background:rgba(14,165,233,.11);color:#bae6fd;border-radius:999px;padding:7px 10px;font-size:12px;font-weight:900}
+    .aboutArrow{color:#64748b;font-weight:950}
     .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#e6edf7;color:#07111f;padding:9px 13px;border-radius:999px;font-weight:900;opacity:0;transition:opacity .18s;z-index:50}
     .toast.show{opacity:1}
-    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:124px}h1{font-size:38px}.mode{font-size:10px}}
+    @media (max-width:390px){body{padding-left:10px;padding-right:10px}.top{margin-left:-10px;margin-right:-10px;padding-left:10px;padding-right:10px}.card{grid-template-columns:104px 1fr}.thumb,.thumb img{width:104px;height:124px}h1{font-size:38px}.mode{font-size:10px}.aboutTitle{font-size:28px}.aboutSheet{padding:16px}}
   </style>
 </head>
 <body>
@@ -206,10 +225,11 @@ HTML = r"""<!doctype html>
     <div class="toprow">
       <div>
         <div class="eyebrow">Private watch scout</div>
-        <h1>GemHunter</h1>
+        <h1 onclick="openAbout()" onkeydown="titleKey(event)" role="button" tabindex="0" aria-label="About GemHunter">GemHunter</h1>
         <div class="status" id="updated">updated __UPDATED__</div>
       </div>
       <div class="topActions">
+        <button class="iconBtn" onclick="openAbout()" aria-label="About GemHunter">i</button>
         <button class="iconBtn" onclick="hardRefresh()" aria-label="Refresh">↻</button>
       </div>
     </div>
@@ -253,6 +273,46 @@ HTML = r"""<!doctype html>
   </section>
   <section id="catalogView" class="view"><div class="placeholder"><h2>Catalog matches</h2><p>Reserved for Sotheby's and auction-catalog watches: if one appears on eBay, it should light up here.</p></div></section>
 </div>
+<div class="aboutBackdrop" id="aboutBackdrop" onclick="backdropClose(event)" role="dialog" aria-modal="true" aria-labelledby="aboutTitle">
+  <section class="aboutSheet">
+    <div class="aboutTop">
+      <div>
+        <div class="aboutKicker">Read me</div>
+        <div class="aboutTitle" id="aboutTitle">What GemHunter Is</div>
+        <p class="aboutLead">GemHunter is a private watch scout built to codify one collector-watchmaker's taste: the watches worth owning, servicing, studying, and maybe selling later.</p>
+      </div>
+      <button class="aboutClose" onclick="closeAbout()" aria-label="Close about">×</button>
+    </div>
+    <div class="aboutGrid">
+      <div class="aboutBlock">
+        <h3>The Principle</h3>
+        <p><b>Taste is the gate. Undervaluation is the multiplier.</b> A watch has to be something I know, love, or find weird in a good way before a low price matters. The app is not trying to find every profitable object. It is trying to find the watches my eye would stop on.</p>
+        <div class="aboutFormula"><span class="aboutPill">taste</span><span class="aboutArrow">then</span><span class="aboutPill">trust</span><span class="aboutArrow">then</span><span class="aboutPill">condition</span><span class="aboutArrow">then</span><span class="aboutPill">opportunity</span></div>
+      </div>
+      <div class="aboutBlock">
+        <h3>What Gets Surfaced</h3>
+        <ul class="aboutList">
+          <li><strong>For Parts:</strong> broken or as-is watches that may be serviceable, especially Swiss chronographs with movements I can repair and source parts for.</li>
+          <li><strong>Chronos:</strong> mechanical chronographs with movement signal, case size, originality, and seller context.</li>
+          <li><strong>Rolex / Patek / IWC:</strong> focused lanes for pieces I actively care about, with extra attention to full sets, originality, seller quality, and era-correct details.</li>
+          <li><strong>Rare Radar:</strong> elusive references worth seeing immediately, even if they are too scarce for ordinary scoring.</li>
+        </ul>
+      </div>
+      <div class="aboutBlock">
+        <h3>How The Score Thinks</h3>
+        <p>Listings pass through hard cuts first: quartz, smartwatches, fashion brands, parts-only listings, redials, replicas, weak sellers, unwanted countries, disliked calibers, and obvious mismatch signals. The survivors get ranked by brand, model, caliber, size, box/papers, authenticity guarantee, seller trust, import risk, moisture risk, and repairability.</p>
+      </div>
+      <div class="aboutBlock">
+        <h3>How It Learns</h3>
+        <p>Hearting a watch tells the app, “more like this.” The thumbs-down tells it, “less like this.” Those signals nudge future listings by title, search, reasons, and feedback terms so the feed slowly bends toward my revealed taste instead of staying a static rules list.</p>
+      </div>
+      <div class="aboutBlock">
+        <h3>Why This Exists</h3>
+        <p>eBay is too noisy to browse manually all day. GemHunter watches the firehose, rejects the junk, groups the results into human-readable tabs, and leaves the final judgment to the collector. The goal is not automation replacing taste. The goal is taste made visible.</p>
+      </div>
+    </div>
+  </section>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -289,6 +349,10 @@ function locBadge(cc){
 function activeCollection(){ return COLLECTIONS.find(c => c.id === active) || COLLECTIONS[0]; }
 function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1100); }
 function hardRefresh(){ window.location.href = window.location.pathname + '?v=' + Date.now(); }
+function openAbout(){ $('aboutBackdrop').classList.add('open'); }
+function closeAbout(){ $('aboutBackdrop').classList.remove('open'); }
+function backdropClose(ev){ if (ev.target.id === 'aboutBackdrop') closeAbout(); }
+function titleKey(ev){ if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); openAbout(); } }
 
 function renderModeDock(){
   if (!MODES.some(m => m.id === 'inspect')) MODES.unshift({id:'inspect', label:'Inspect', icon:'!'});
@@ -485,6 +549,7 @@ surface.addEventListener('pointercancel', () => { swipe = null; }, {passive:true
 surface.addEventListener('touchstart', ev => { if(ev.changedTouches.length){ const t=ev.changedTouches[0]; swipeStart(t.clientX,t.clientY); }}, {passive:true});
 surface.addEventListener('touchend', ev => { if(ev.changedTouches.length){ const t=ev.changedTouches[0]; swipeEnd(t.clientX,t.clientY); }}, {passive:true});
 document.addEventListener('keydown', ev => { if(ev.key==='ArrowRight') swipeEnd((swipe?.x || 0)+100, swipe?.y || 0); if(ev.key==='ArrowLeft') swipeEnd((swipe?.x || 0)-100, swipe?.y || 0); });
+document.addEventListener('keydown', ev => { if(ev.key==='Escape') closeAbout(); });
 
 renderModeDock(); installSortOptions(); renderRail(); loadCollection();
 </script>
