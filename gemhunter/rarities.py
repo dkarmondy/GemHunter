@@ -110,7 +110,9 @@ T_ROLEX_DRESS = 25.0       # Datejust, Day-Date, Cellini
 T_OMEGA = -40.0            # bottom by request, however nice
 W_PRE_1980 = -60.0         # bottom by request, unless it's one of his lanes
 W_SIZE_OK = 8.0            # 36mm and up: wearable
-W_SIZE_SMALL = -25.0       # under 36mm, however good the watch is
+# Deep enough that a 34mm project loses to a clean 40mm of the same model:
+# an unwearable case is a worse problem than a movement he can fix himself.
+W_SIZE_SMALL = -35.0
 SIZE_MIN = 36.0
 _MM_RE = re.compile(r"(\d{2}(?:\.\d)?)\s*mm", re.I)
 
