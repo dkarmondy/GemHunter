@@ -42,8 +42,21 @@ STORE_URL = "https://www.ebay.com/str/turnaroundrarities"
 # Bulova, 41 Seiko, 20 Elgin, 12 Gucci, 9 Tissot, 8 Wittnauer out of 420), and
 # scrolling past it is the whole problem this tab exists to solve.
 # ---------------------------------------------------------------------------
-BLOCKED_BRANDS = ["seiko", "tissot", "bulova", "gucci", "elgin", "wittnauer",
-                  "accutron"]
+BLOCKED_BRANDS = [
+    "seiko", "tissot", "bulova", "gucci", "elgin", "wittnauer", "accutron",
+    "casio", "armitron", "movado", "citizen", "timex", "fossil", "gruen",
+    "pulsar", "stuhrling", "vostok", "rotary", "rousseau", "invicta",
+    "ecclissi", "caravelle", "genoa", "wohler", "swatch", "armani",
+    "emporio armani", "raymond weil", "rado", "mido", "benrus", "wyler",
+    "raketa", "poljot", "hamilton",
+]
+# Word boundaries, or "rado" hits Colorado and "mido" hits any stray substring.
+_BLOCKED_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(b) for b in BLOCKED_BRANDS) + r")\b", re.I)
+# One exception to the block list: the Tempograf is on his rare-watch radar in
+# knowledge.RARE_TARGETS, so a Movado that happens to be one still gets through.
+_BLOCK_EXEMPT_RE = re.compile(r"(?i)tempo\s*-?\s*graf")
+
 BLOCKED_WORDS = ["quartz", "ladies", "lady's", "ladys", "women's", "womens",
                  "girls", "pocket watch", "smartwatch", "smart watch",
                  "apple watch", "tuning fork"]
@@ -89,6 +102,8 @@ ACCESSORY_WORDS = ["bracelet", "strap", "band", "buckle", "clasp", "bezel",
 # Watch"), so they only mean a parts listing when the lot is one — hence the
 # "lot of" qualifier rather than the word-order test.
 PART_WORDS = ["dial", "hands", "crown", "crystal", "movement", "parts", "case"]
+# Their consignment numbering: #W… is a watch, #WB… is bracelets and parts.
+_STOCK_RE = re.compile(r"#w(b?)\d", re.I)
 W_ACCESSORY = -70.0        # a part, not a watch: below everything but old Omega
 
 # Model names that date themselves, for the titles that carry no year, no
@@ -106,7 +121,7 @@ T_ROLEX_SPORTS = 45.0      # same models, nothing wrong with them
 T_BREITLING = 42.0
 T_TUDOR = 38.0
 T_TASTE = 30.0             # any other brand he collects
-T_ROLEX_DRESS = 25.0       # Datejust, Day-Date, Cellini
+T_ROLEX_DRESS = 40.0       # Datejust, Day-Date, Cellini
 T_OMEGA = -40.0            # bottom by request, however nice
 W_PRE_1980 = -60.0         # bottom by request, unless it's one of his lanes
 W_SIZE_OK = 8.0            # 36mm and up: wearable
@@ -133,9 +148,9 @@ def _is_iwc(t: str) -> bool:
 def excluded(title: str):
     """Reason this lot should never be shown, or None to keep it."""
     t = " " + (title or "").lower() + " "
-    for brand in BLOCKED_BRANDS:
-        if brand in t:
-            return brand
+    blocked = _BLOCKED_RE.search(t)
+    if blocked and not _BLOCK_EXEMPT_RE.search(t):
+        return blocked.group(0)
     for word in BLOCKED_WORDS:
         if word in t:
             return word
@@ -148,11 +163,19 @@ def excluded(title: str):
 def is_accessory(t: str) -> bool:
     """True when a part, not a watch, is the thing being sold.
 
-    Decided by word order rather than presence: "Rubber Strap Watch" is a
-    watch, "Watch Bracelet" is a bracelet, and "Navitimer Bracelet" names no
-    watch at all. "Watch Head" stays a watch — a head is the watch itself,
-    minus its bracelet, and is exactly what he buys to rebuild.
+    Their own stock number settles it: every title ends in one, and a "B"
+    marks the bracelet-and-parts consignment — #W314298 is a watch, #WB5702 is
+    three loose dials. That beats reading the words, which called a "Datejust
+    16030 ... Engine Turned Bezel" a bezel.
+
+    Without a code, fall back to word order: "Rubber Strap Watch" is a watch,
+    "Watch Bracelet" is a bracelet, "Navitimer Bracelet" names no watch at
+    all. "Watch Head" stays a watch — a head is the watch minus its bracelet,
+    and is exactly what he buys to rebuild.
     """
+    code = _STOCK_RE.search(t)
+    if code:
+        return bool(code.group(1))
     last_watch = t.rfind("watch")
     for word in ACCESSORY_WORDS:
         at = t.rfind(word)
@@ -233,8 +256,10 @@ def taste(title: str) -> float:
             score += 6
     elif "tudor" in t:
         score, protected = T_TUDOR, False
-    elif "rolex" in t:
-        score, protected = T_ROLEX_DRESS, False
+    elif is_rolex:
+        # Rolex is his brand whatever the decade, so a 1601 Datejust is not
+        # buried by the age rule the way a 1960s no-name would be.
+        score, protected = T_ROLEX_DRESS, True
     elif _is_iwc(t):                      # pre-80s IWC: wanted, but not a lead
         score, protected = T_TASTE, False
     elif any(b in t for b in TASTE_BRANDS):
