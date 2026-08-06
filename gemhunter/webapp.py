@@ -1725,6 +1725,9 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .inspect{margin-left:auto}
 .err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
  border-radius:11px;margin-top:16px;font-size:14px}
+.more{width:100%;font:inherit;font-weight:700;color:#e9eef6;background:#0f1c30;
+ border:1px solid #23395c;border-radius:12px;padding:13px;margin-top:16px}
+.more:disabled{opacity:.55}
 </style></head><body>
 <div class="head">
   <div>
@@ -1737,6 +1740,7 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 </div>
 <div class="status" id="status"></div>
 <div id="out"></div>
+<div id="foot"></div>
 <script>
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
   function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
@@ -1763,7 +1767,9 @@ function fmtLeft(ms){
   if (h) return h + 'h ' + m + 'm';
   return m + 'm';
 }
-var ITEMS = [], ticker = null;
+// Start on the top slice: the whole consignment runs to several hundred lots,
+// which is a slow parse and a slow paint on a phone. LIMIT 0 means everything.
+var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null;
 function paintClocks(){
   ITEMS.forEach(function(it, i){
     var el = document.getElementById('ends-' + i);
@@ -1798,12 +1804,33 @@ function render(items){
   if (ticker) clearInterval(ticker);
   paintClocks();
   ticker = setInterval(paintClocks, 30000);
+  paintFoot();
+}
+function paintFoot(){
+  var foot = document.getElementById('foot');
+  if (LIMIT && TOTAL > ITEMS.length) {
+    foot.innerHTML = '<button type="button" class="more" id="moreBtn">'
+      + 'Show all ' + TOTAL + ' lots</button>';
+    document.getElementById('moreBtn').onclick = function(){
+      this.disabled = true;
+      this.textContent = 'Loading all ' + TOTAL + '…';
+      LIMIT = 0;
+      load(false);
+    };
+  } else {
+    foot.innerHTML = '';
+  }
+}
+// A failed "show all" must not leave a dead disabled button behind: put the
+// cap back so the footer offers the expansion again.
+function failedExpand(){
+  if (!LIMIT) { LIMIT = 60; paintFoot(); }
 }
 function load(fresh){
   var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
   btn.disabled = true;
   if (!ITEMS.length) st.textContent = 'Fetching the week\\u2019s auctions\\u2026';
-  fetch('/api/rarities' + (fresh ? '?fresh=1' : ''), {cache: 'no-store'})
+  fetch('/api/rarities?limit=' + LIMIT + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.error) {
@@ -1811,16 +1838,21 @@ function load(fresh){
           document.getElementById('out').innerHTML =
             '<div class="err">' + esc(d.error) + '</div>';
         st.textContent = 'Refresh failed \\u2014 showing what was loaded.';
+        failedExpand();
         return;
       }
+      TOTAL = d.total || d.items.length;
       render(d.items);
-      st.textContent = d.items.length + ' auctions \\u00b7 updated ' + d.updated
-        + (d.cached_secs ? ' (cached)' : '');
+      st.textContent = (d.items.length < TOTAL
+          ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
+          : TOTAL + ' auctions')
+        + ' \\u00b7 updated ' + d.updated + (d.cached_secs ? ' (cached)' : '');
     })
     .catch(function(e){
       if (!ITEMS.length)
         document.getElementById('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
       st.textContent = 'Refresh failed.';
+      failedExpand();
     })
     .then(function(){ btn.disabled = false; });
 }
@@ -1942,11 +1974,21 @@ class Handler(BaseHTTPRequestHandler):
             except requests.RequestException as exc:
                 self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
                 return
+            # The cache holds the whole consignment because ranking needs it,
+            # but a few hundred cards is a slow parse and a slow paint on a
+            # phone. Send the top slice; "show all" asks for limit=0.
+            items = data["items"]
+            try:
+                limit = int(params.get("limit", ["60"])[0])
+            except ValueError:
+                limit = 60
             self._json(HTTPStatus.OK, {
                 "updated": _now_str(),
                 "seller": RARITIES_SELLER,
                 "store": RARITIES_STORE_URL,
-                **data,
+                "cached_secs": data["cached_secs"],
+                "total": len(items),
+                "items": items[:limit] if limit > 0 else items,
             })
             return
         if parsed.path == "/api/item":
