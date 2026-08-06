@@ -2020,13 +2020,13 @@ function render(items){
       +   (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
       +   '</a>'
       +   '<div class="votes">'
-      +     '<button type="button" class="vote down' + (it.disliked ? ' on' : '')
-      +       '" id="dn-' + i + '" onclick="vote(' + i + ',-1)" '
-      +       'aria-label="Less like this">' + THUMB_SVG + '</button>'
       +     '<button type="button" class="vote heart' + (it.saved ? ' on' : '')
       +       '" id="hr-' + i + '" onclick="vote(' + i + ',1)" '
       +       'aria-label="More like this">'
       +       (it.saved ? '&#9829;' : '&#9825;') + '</button>'
+      +     '<button type="button" class="vote down' + (it.disliked ? ' on' : '')
+      +       '" id="dn-' + i + '" onclick="vote(' + i + ',-1)" '
+      +       'aria-label="Less like this">' + THUMB_SVG + '</button>'
       +   '</div>'
       + '</div>'
       + '<div class="flags" id="fl-' + i + '">' + flagHtml(it.flags) + '</div>'
