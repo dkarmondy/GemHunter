@@ -1086,25 +1086,37 @@ def fetch_rarities(db_path: str, fresh: bool = False) -> dict:
     storage = Storage(db_path)
     try:
         likes, dislikes = _preference_profile(storage.feedback_rows())
-        # Hearts on this tab are the sharpest signal available here: they are
-        # about these lots, from this seller, not the scout's wider feed. They
-        # weigh a little heavier than the thumbs history for that reason.
+        # Votes on this tab are the sharpest signal available here: they are
+        # about these lots, from this seller, not the scout's wider feed.
         hearted = storage.rarities_liked_titles()
-        saved_ids = storage.rarities_saved_ids()
+        thumbed = storage.rarities_disliked_titles()
+        saved_ids, disliked_ids = storage.rarities_voted_ids()
     finally:
         storage.close()
     for title in hearted:
         likes.update(_tokens(title))
+    # Kept apart from the scout's dislike history, which stays a gentle nudge.
+    # A thumbs-down here is a explicit "send this to the bottom", so it gets an
+    # order of magnitude more weight — enough to cross the tier gaps.
+    thumbs_down = Counter()
+    for title in thumbed:
+        thumbs_down.update(_tokens(title))
     for item in items:
         bag = _tokens(item["title"])
         boost = (min(6.0, sum(min(likes[t], 4) for t in bag) * 0.22)
-                 - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22))
+                 - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22)
+                 - min(60.0, sum(min(thumbs_down[t], 4) for t in bag) * 3.0))
         item["saved"] = item["id"] in saved_ids
+        item["disliked"] = item["id"] in disliked_ids
         item["boost"] = round(boost, 2)
         item["taste"] = round(item["taste"] + boost, 2)
+        # The one he actually thumbed down goes below everything, similar or
+        # not — he has already looked at it and said no.
+        if item["disliked"]:
+            item["taste"] = -999.0
     # Hearts are not pinned to the top — that would crowd out the new lots the
-    # tab exists to surface. They shift the ranking instead, and the heart
-    # filter is there when he wants the shortlist on its own.
+    # tab exists to surface. They shift the ranking instead, and the filters
+    # are there when he wants either shortlist on its own.
     items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
     with _rarities_lock:
         _rarities_cache["ts"] = time.time()
@@ -1731,19 +1743,29 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .pic{position:relative;display:block}
 /* Floats over the top-right of the photo. Sized for a thumb, and dark enough
    underneath that a white dial doesn't swallow it. */
-.heart{position:absolute;top:9px;right:9px;width:42px;height:42px;
- border:0;border-radius:50%;background:rgba(8,17,31,.55);
+.votes{position:absolute;top:9px;right:9px;display:flex;gap:7px}
+.vote{width:42px;height:42px;border:0;border-radius:50%;
+ background:rgba(8,17,31,.55);
  backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
  color:#e9eef6;font-size:21px;line-height:1;display:grid;place-items:center;
  padding:0;transition:transform .12s ease}
-.heart:active{transform:scale(.86)}
+.vote:active{transform:scale(.86)}
+.vote svg{width:20px;height:20px;stroke:currentColor;fill:none}
 .heart.on{color:#ff4d6a;background:rgba(8,17,31,.72)}
+.down.on{color:#fbbf24;background:rgba(8,17,31,.72)}
 .card.saved{border-color:rgba(255,77,106,.55)}
+/* Demoted, not hidden: dimmed so it reads as "sent to the bottom" while
+   staying easy to undo from the thumbs-down filter. */
+.card.disliked{border-color:rgba(251,191,36,.4);opacity:.62}
 .filters{display:flex;gap:8px;margin-bottom:4px}
 .filt{font:inherit;font-size:12px;font-weight:700;color:#8ba0bd;
  background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 11px}
 .filt.on{color:#ff4d6a;border-color:rgba(255,77,106,.5);
  background:rgba(255,77,106,.1)}
+.filt.down.on{color:#fbbf24;border-color:rgba(251,191,36,.5);
+ background:rgba(251,191,36,.1)}
+.filt svg{width:13px;height:13px;stroke:currentColor;fill:none;
+ vertical-align:-2px;margin-right:3px}
 .info{padding:11px 13px 13px}
 .row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .bid{font-size:24px;font-weight:800;color:#f0d67a}
@@ -1843,7 +1865,13 @@ function fmtLeft(ms){
 // Start on the top slice: the whole consignment runs to several hundred lots,
 // which is a slow parse and a slow paint on a phone. LIMIT 0 means everything.
 var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null, flagTries = 0;
-var SAVED = 0, SAVED_ONLY = false;
+var SAVED = 0, DOWN = 0, VIEW = '';
+// Same monochrome thumb the main app uses, so a vote looks the same everywhere.
+var THUMB_SVG = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"'
+  + ' stroke-linejoin="round" aria-hidden="true"><path d="M17 14V3"/>'
+  + '<path d="M7 10.5 9.1 3H17v11h-5.2l-1.5 5.2c-.2.7-.8 1.2-1.6 1.2h-.4c-.8 0'
+  + '-1.4-.8-1.2-1.6L8.4 14H5.2c-1.2 0-2.1-1.1-1.8-2.3l1.3-5.2C5 5.6 5.8 5 6.7 5h2"/>'
+  + '</svg>';
 function flagHtml(flags){
   if (!flags || !flags.length) return '';
   return flags.map(function(f){
@@ -1868,47 +1896,62 @@ function paintTop(){
   if (b) b.classList.toggle('on', window.scrollY > 700);
 }
 window.addEventListener('scroll', paintTop, {passive: true});
-// Hearting is optimistic: the icon fills immediately, because waiting on the
-// Pi round-trip makes a tap feel broken. If the write fails it reverts.
-function toggleHeart(i){
+// Voting is optimistic: the icon fills immediately, because waiting on the Pi
+// round-trip makes a tap feel broken. If the write fails it reverts.
+// Tapping the same vote again clears it, so a mis-tap is one tap to undo.
+function vote(i, want){
   var it = ITEMS[i];
   if (!it) return;
-  var want = !it.saved, btn = document.getElementById('hr-' + i),
-      card = document.getElementById('card-' + i);
-  paintHeart(btn, card, want);
-  it.saved = want;
-  fetch('/api/rarities/like', {
+  var had = it.saved ? 1 : (it.disliked ? -1 : 0);
+  var now = (had === want) ? 0 : want;
+  paintVote(i, now);
+  it.saved = (now === 1); it.disliked = (now === -1);
+  fetch('/api/rarities/vote', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({item_id: it.id, saved: want, title: it.title})
+    body: JSON.stringify({item_id: it.id, vote: now, title: it.title})
   })
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (!d.ok) throw new Error('rejected');
-      SAVED += want ? 1 : -1;
+      if (had === 1) SAVED--; if (had === -1) DOWN--;
+      if (now === 1) SAVED++; if (now === -1) DOWN++;
       paintFilters();
     })
     .catch(function(){
-      it.saved = !want;
-      paintHeart(btn, card, !want);
+      it.saved = (had === 1); it.disliked = (had === -1);
+      paintVote(i, had);
     });
 }
-function paintHeart(btn, card, on){
-  if (btn) {
-    btn.classList.toggle('on', on);
-    btn.innerHTML = on ? '\\u2665' : '\\u2661';
+function paintVote(i, v){
+  var hr = document.getElementById('hr-' + i),
+      dn = document.getElementById('dn-' + i),
+      card = document.getElementById('card-' + i);
+  if (hr) {
+    hr.classList.toggle('on', v === 1);
+    hr.innerHTML = v === 1 ? '\\u2665' : '\\u2661';
   }
-  if (card) card.classList.toggle('saved', on);
+  if (dn) dn.classList.toggle('on', v === -1);
+  if (card) {
+    card.classList.toggle('saved', v === 1);
+    card.classList.toggle('disliked', v === -1);
+  }
 }
 function paintFilters(){
   var el = document.getElementById('filters');
   if (!el) return;
-  el.innerHTML = '<button type="button" class="filt' + (SAVED_ONLY ? ' on' : '')
-    + '" onclick="toggleSavedOnly()">' + (SAVED_ONLY ? '\\u2665' : '\\u2661')
-    + ' hearted' + (SAVED ? ' (' + SAVED + ')' : '') + '</button>';
+  el.innerHTML =
+    '<button type="button" class="filt' + (VIEW === 'saved' ? ' on' : '')
+      + '" onclick="setView(\\'saved\\')">'
+      + (VIEW === 'saved' ? '\\u2665' : '\\u2661') + ' hearted'
+      + (SAVED ? ' (' + SAVED + ')' : '') + '</button>'
+    + '<button type="button" class="filt down'
+      + (VIEW === 'disliked' ? ' on' : '') + '" onclick="setView(\\'disliked\\')">'
+      + THUMB_SVG + 'buried' + (DOWN ? ' (' + DOWN + ')' : '') + '</button>';
 }
-function toggleSavedOnly(){
-  SAVED_ONLY = !SAVED_ONLY;
+// Tapping the active filter returns to the full list.
+function setView(v){
+  VIEW = (VIEW === v) ? '' : v;
   flagTries = 0;
   paintFilters();
   load(false);
@@ -1970,15 +2013,21 @@ function paintClocks(){
 function render(items){
   ITEMS = items;
   document.getElementById('out').innerHTML = items.map(function(it, i){
-    return '<div class="card' + (it.saved ? ' saved' : '') + '" id="card-' + i + '">'
+    return '<div class="card' + (it.saved ? ' saved' : '')
+      + (it.disliked ? ' disliked' : '') + '" id="card-' + i + '">'
       + '<div class="pic">'
       +   '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
       +   (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
       +   '</a>'
-      +   '<button type="button" class="heart' + (it.saved ? ' on' : '') + '" '
-      +     'id="hr-' + i + '" onclick="toggleHeart(' + i + ')" '
-      +     'aria-label="Save this lot">' + (it.saved ? '&#9829;' : '&#9825;')
-      +   '</button>'
+      +   '<div class="votes">'
+      +     '<button type="button" class="vote down' + (it.disliked ? ' on' : '')
+      +       '" id="dn-' + i + '" onclick="vote(' + i + ',-1)" '
+      +       'aria-label="Less like this">' + THUMB_SVG + '</button>'
+      +     '<button type="button" class="vote heart' + (it.saved ? ' on' : '')
+      +       '" id="hr-' + i + '" onclick="vote(' + i + ',1)" '
+      +       'aria-label="More like this">'
+      +       (it.saved ? '&#9829;' : '&#9825;') + '</button>'
+      +   '</div>'
       + '</div>'
       + '<div class="flags" id="fl-' + i + '">' + flagHtml(it.flags) + '</div>'
       + '<div class="info">'
@@ -2029,7 +2078,7 @@ function pollFlags(){
   if (flagTries >= 6) return;
   flagTries++;
   setTimeout(function(){
-    fetch('/api/rarities?limit=' + LIMIT + (SAVED_ONLY ? '&saved=1' : '')
+    fetch('/api/rarities?limit=' + LIMIT + (VIEW ? '&view=' + VIEW : '')
           + '&_=' + Date.now(), {cache: 'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(d){
@@ -2048,7 +2097,7 @@ function load(fresh){
   var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
   btn.disabled = true;
   if (!ITEMS.length) st.textContent = 'Fetching the week\\u2019s auctions\\u2026';
-  fetch('/api/rarities?limit=' + LIMIT + (SAVED_ONLY ? '&saved=1' : '')
+  fetch('/api/rarities?limit=' + LIMIT + (VIEW ? '&view=' + VIEW : '')
         + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(d){
@@ -2062,12 +2111,13 @@ function load(fresh){
       }
       TOTAL = d.total || d.items.length;
       SAVED = d.saved_count || 0;
+      DOWN = d.disliked_count || 0;
       paintFilters();
       render(d.items);
       flagTries = 0;
       if (d.details_pending) pollFlags();
-      st.textContent = (SAVED_ONLY
-          ? d.items.length + ' hearted'
+      st.textContent = (VIEW
+          ? d.items.length + (VIEW === 'saved' ? ' hearted' : ' buried')
           : (d.items.length < TOTAL
               ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
               : TOTAL + ' auctions'))
@@ -2207,9 +2257,11 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(params.get("limit", ["60"])[0])
             except ValueError:
                 limit = 60
-            saved_only = params.get("saved", [""])[0] in ("1", "true", "yes")
-            if saved_only:
+            view = params.get("view", [""])[0]
+            if view == "saved":
                 items = [i for i in items if i.get("saved")]
+            elif view == "disliked":
+                items = [i for i in items if i.get("disliked")]
             shown = items[:limit] if limit > 0 else items
             # Condition text arrives on a background pass; the page asks again
             # while `details_pending` is non-zero and patches the chips in.
@@ -2223,6 +2275,7 @@ class Handler(BaseHTTPRequestHandler):
                 "cached_secs": data["cached_secs"],
                 "total": len(items),
                 "saved_count": sum(1 for i in data["items"] if i.get("saved")),
+                "disliked_count": sum(1 for i in data["items"] if i.get("disliked")),
                 "details_pending": pending,
                 "items": shown,
             })
@@ -2279,14 +2332,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "missing item_id"})
             return
         storage = Storage(self.db_path)
-        if self.path == "/api/rarities/like":
-            saved = bool(body.get("saved"))
-            ok = storage.set_rarities_saved(item_id, saved,
-                                            str(body.get("title", ""))[:300])
+        if self.path == "/api/rarities/vote":
+            try:
+                vote = int(body.get("vote", 0))
+            except (TypeError, ValueError):
+                vote = 0
+            vote = max(-1, min(1, vote))
+            ok = storage.set_rarities_vote(item_id, vote,
+                                           str(body.get("title", ""))[:300])
             storage.close()
-            # The ranking is learned from hearts, so it has to be recomputed.
+            # The ranking is learned from these votes, so it must be recomputed.
             _invalidate_rarities()
-            self._json(HTTPStatus.OK, {"ok": ok, "saved": saved})
+            self._json(HTTPStatus.OK, {"ok": ok, "vote": vote})
             return
         if self.path == "/api/save":
             ok = storage.set_saved(item_id, bool(body.get("saved")))
