@@ -131,7 +131,9 @@ CREATE TABLE IF NOT EXISTS rarities_seen (
     title       TEXT,
     ends        TEXT,
     taste       REAL,
-    first_seen  REAL
+    first_seen  REAL,
+    saved       INTEGER DEFAULT 0,
+    saved_at    REAL
 );
 
 CREATE TABLE IF NOT EXISTS comps (
@@ -196,6 +198,13 @@ class Storage:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass  # column already exists
+        # rarities_seen predates the heart button on some databases.
+        for col, decl in [("saved", "INTEGER DEFAULT 0"), ("saved_at", "REAL")]:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE rarities_seen ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass
         try:
             self._conn.execute("ALTER TABLE listing_observations ADD COLUMN fingerprint TEXT")
         except sqlite3.OperationalError:
@@ -496,6 +505,39 @@ class Storage:
         )
         self._conn.commit()
         return fresh
+
+    def set_rarities_saved(self, item_id: str, saved: bool, title: str = "") -> bool:
+        """Heart or un-heart a lot, inserting it if the digest hasn't seen it.
+
+        The row has to be created on demand: hearts come from browsing the tab,
+        which can happen before the digest's first sweep records that lot.
+        """
+        now = time.time()
+        self._conn.execute(
+            """INSERT INTO rarities_seen (item_id, title, first_seen, saved, saved_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(item_id) DO UPDATE SET
+                   saved = excluded.saved,
+                   saved_at = excluded.saved_at,
+                   title = CASE WHEN rarities_seen.title IS NULL
+                                  OR rarities_seen.title = ''
+                                THEN excluded.title ELSE rarities_seen.title END""",
+            (item_id, title, now, 1 if saved else 0, now if saved else None),
+        )
+        self._conn.commit()
+        return True
+
+    def rarities_saved_ids(self) -> set:
+        return {r["item_id"] for r in self._conn.execute(
+            "SELECT item_id FROM rarities_seen WHERE saved = 1")}
+
+    def rarities_liked_titles(self, limit: int = 300) -> list[str]:
+        """What he hearted, newest first — the training set for the boost."""
+        cur = self._conn.execute(
+            """SELECT title FROM rarities_seen
+               WHERE saved = 1 AND title IS NOT NULL AND title != ''
+               ORDER BY saved_at DESC LIMIT ?""", (limit,))
+        return [r["title"] for r in cur.fetchall()]
 
     def feedback_rows(self, limit: int = 500) -> list[dict]:
         cur = self._conn.execute(

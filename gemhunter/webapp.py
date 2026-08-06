@@ -1070,8 +1070,14 @@ _rarities_lock = threading.Lock()
 _rarities_cache: dict = {"ts": 0.0, "items": None}
 
 
+def _invalidate_rarities() -> None:
+    """Force the next load to re-rank — a new heart changes the order."""
+    with _rarities_lock:
+        _rarities_cache["ts"] = 0.0
+
+
 def fetch_rarities(db_path: str, fresh: bool = False) -> dict:
-    """The week's lots, taste-ranked, with your thumbs feedback layered on top."""
+    """The week's lots, taste-ranked, with what he has hearted layered on top."""
     with _rarities_lock:
         age = time.time() - _rarities_cache["ts"]
         if _rarities_cache["items"] is not None and age < RARITIES_TTL and not fresh:
@@ -1080,12 +1086,25 @@ def fetch_rarities(db_path: str, fresh: bool = False) -> dict:
     storage = Storage(db_path)
     try:
         likes, dislikes = _preference_profile(storage.feedback_rows())
+        # Hearts on this tab are the sharpest signal available here: they are
+        # about these lots, from this seller, not the scout's wider feed. They
+        # weigh a little heavier than the thumbs history for that reason.
+        hearted = storage.rarities_liked_titles()
+        saved_ids = storage.rarities_saved_ids()
     finally:
         storage.close()
+    for title in hearted:
+        likes.update(_tokens(title))
     for item in items:
         bag = _tokens(item["title"])
-        boost = min(4.0, sum(min(likes[t], 3) for t in bag) * 0.18)             - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22)
+        boost = (min(6.0, sum(min(likes[t], 4) for t in bag) * 0.22)
+                 - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22))
+        item["saved"] = item["id"] in saved_ids
+        item["boost"] = round(boost, 2)
         item["taste"] = round(item["taste"] + boost, 2)
+    # Hearts are not pinned to the top — that would crowd out the new lots the
+    # tab exists to surface. They shift the ranking instead, and the heart
+    # filter is there when he wants the shortlist on its own.
     items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
     with _rarities_lock:
         _rarities_cache["ts"] = time.time()
@@ -1708,6 +1727,22 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
  margin-top:14px;overflow:hidden}
 /* The picture IS the page — full-bleed inside the card, info rides below. */
 .shot{display:block;width:100%;min-height:200px;background:#0b1526}
+.pic{position:relative;display:block}
+/* Floats over the top-right of the photo. Sized for a thumb, and dark enough
+   underneath that a white dial doesn't swallow it. */
+.heart{position:absolute;top:9px;right:9px;width:42px;height:42px;
+ border:0;border-radius:50%;background:rgba(8,17,31,.55);
+ backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+ color:#e9eef6;font-size:21px;line-height:1;display:grid;place-items:center;
+ padding:0;transition:transform .12s ease}
+.heart:active{transform:scale(.86)}
+.heart.on{color:#ff4d6a;background:rgba(8,17,31,.72)}
+.card.saved{border-color:rgba(255,77,106,.55)}
+.filters{display:flex;gap:8px;margin-bottom:4px}
+.filt{font:inherit;font-size:12px;font-weight:700;color:#8ba0bd;
+ background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 11px}
+.filt.on{color:#ff4d6a;border-color:rgba(255,77,106,.5);
+ background:rgba(255,77,106,.1)}
 .info{padding:11px 13px 13px}
 .row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .bid{font-size:24px;font-weight:800;color:#f0d67a}
@@ -1755,6 +1790,7 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
   <button class="refresh" id="refreshBtn" onclick="load(true)"
           aria-label="Refresh">&#8635;</button>
 </div>
+<div class="filters" id="filters"></div>
 <div class="status" id="status"></div>
 <div id="out"></div>
 <div id="foot"></div>
@@ -1787,11 +1823,57 @@ function fmtLeft(ms){
 // Start on the top slice: the whole consignment runs to several hundred lots,
 // which is a slow parse and a slow paint on a phone. LIMIT 0 means everything.
 var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null, flagTries = 0;
+var SAVED = 0, SAVED_ONLY = false;
 function flagHtml(flags){
   if (!flags || !flags.length) return '';
   return flags.map(function(f){
     return '<span class="fl ' + esc(f.sev) + '">' + esc(f.label) + '</span>';
   }).join('');
+}
+// Hearting is optimistic: the icon fills immediately, because waiting on the
+// Pi round-trip makes a tap feel broken. If the write fails it reverts.
+function toggleHeart(i){
+  var it = ITEMS[i];
+  if (!it) return;
+  var want = !it.saved, btn = document.getElementById('hr-' + i),
+      card = document.getElementById('card-' + i);
+  paintHeart(btn, card, want);
+  it.saved = want;
+  fetch('/api/rarities/like', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({item_id: it.id, saved: want, title: it.title})
+  })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (!d.ok) throw new Error('rejected');
+      SAVED += want ? 1 : -1;
+      paintFilters();
+    })
+    .catch(function(){
+      it.saved = !want;
+      paintHeart(btn, card, !want);
+    });
+}
+function paintHeart(btn, card, on){
+  if (btn) {
+    btn.classList.toggle('on', on);
+    btn.innerHTML = on ? '\\u2665' : '\\u2661';
+  }
+  if (card) card.classList.toggle('saved', on);
+}
+function paintFilters(){
+  var el = document.getElementById('filters');
+  if (!el) return;
+  el.innerHTML = '<button type="button" class="filt' + (SAVED_ONLY ? ' on' : '')
+    + '" onclick="toggleSavedOnly()">' + (SAVED_ONLY ? '\\u2665' : '\\u2661')
+    + ' hearted' + (SAVED ? ' (' + SAVED + ')' : '') + '</button>';
+}
+function toggleSavedOnly(){
+  SAVED_ONLY = !SAVED_ONLY;
+  flagTries = 0;
+  paintFilters();
+  load(false);
 }
 // The Pi serves plain http, where navigator.clipboard does not exist, so the
 // old textarea trick is the path that actually works on the phone.
@@ -1850,10 +1932,16 @@ function paintClocks(){
 function render(items){
   ITEMS = items;
   document.getElementById('out').innerHTML = items.map(function(it, i){
-    return '<div class="card">'
-      + '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
-      + (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
-      + '</a>'
+    return '<div class="card' + (it.saved ? ' saved' : '') + '" id="card-' + i + '">'
+      + '<div class="pic">'
+      +   '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
+      +   (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
+      +   '</a>'
+      +   '<button type="button" class="heart' + (it.saved ? ' on' : '') + '" '
+      +     'id="hr-' + i + '" onclick="toggleHeart(' + i + ')" '
+      +     'aria-label="Save this lot">' + (it.saved ? '&#9829;' : '&#9825;')
+      +   '</button>'
+      + '</div>'
       + '<div class="flags" id="fl-' + i + '">' + flagHtml(it.flags) + '</div>'
       + '<div class="info">'
       +   '<div class="row">'
@@ -1902,7 +1990,8 @@ function pollFlags(){
   if (flagTries >= 6) return;
   flagTries++;
   setTimeout(function(){
-    fetch('/api/rarities?limit=' + LIMIT + '&_=' + Date.now(), {cache: 'no-store'})
+    fetch('/api/rarities?limit=' + LIMIT + (SAVED_ONLY ? '&saved=1' : '')
+          + '&_=' + Date.now(), {cache: 'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(d){
         if (!d.items) return;
@@ -1920,7 +2009,8 @@ function load(fresh){
   var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
   btn.disabled = true;
   if (!ITEMS.length) st.textContent = 'Fetching the week\\u2019s auctions\\u2026';
-  fetch('/api/rarities?limit=' + LIMIT + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
+  fetch('/api/rarities?limit=' + LIMIT + (SAVED_ONLY ? '&saved=1' : '')
+        + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.error) {
@@ -1932,12 +2022,16 @@ function load(fresh){
         return;
       }
       TOTAL = d.total || d.items.length;
+      SAVED = d.saved_count || 0;
+      paintFilters();
       render(d.items);
       flagTries = 0;
       if (d.details_pending) pollFlags();
-      st.textContent = (d.items.length < TOTAL
-          ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
-          : TOTAL + ' auctions')
+      st.textContent = (SAVED_ONLY
+          ? d.items.length + ' hearted'
+          : (d.items.length < TOTAL
+              ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
+              : TOTAL + ' auctions'))
         + ' \\u00b7 updated ' + d.updated + (d.cached_secs ? ' (cached)' : '');
     })
     .catch(function(e){
@@ -2074,6 +2168,9 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(params.get("limit", ["60"])[0])
             except ValueError:
                 limit = 60
+            saved_only = params.get("saved", [""])[0] in ("1", "true", "yes")
+            if saved_only:
+                items = [i for i in items if i.get("saved")]
             shown = items[:limit] if limit > 0 else items
             # Condition text arrives on a background pass; the page asks again
             # while `details_pending` is non-zero and patches the chips in.
@@ -2086,6 +2183,7 @@ class Handler(BaseHTTPRequestHandler):
                 "store": RARITIES_STORE_URL,
                 "cached_secs": data["cached_secs"],
                 "total": len(items),
+                "saved_count": sum(1 for i in data["items"] if i.get("saved")),
                 "details_pending": pending,
                 "items": shown,
             })
@@ -2142,6 +2240,15 @@ class Handler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "missing item_id"})
             return
         storage = Storage(self.db_path)
+        if self.path == "/api/rarities/like":
+            saved = bool(body.get("saved"))
+            ok = storage.set_rarities_saved(item_id, saved,
+                                            str(body.get("title", ""))[:300])
+            storage.close()
+            # The ranking is learned from hearts, so it has to be recomputed.
+            _invalidate_rarities()
+            self._json(HTTPStatus.OK, {"ok": ok, "saved": saved})
+            return
         if self.path == "/api/save":
             ok = storage.set_saved(item_id, bool(body.get("saved")))
         elif self.path == "/api/hide":
