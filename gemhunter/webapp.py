@@ -23,6 +23,7 @@ from .config import load_config
 from .ebay import EbayClient
 from .rarities import SELLER as RARITIES_SELLER
 from .rarities import STORE_URL as RARITIES_STORE_URL
+from .rarities import apply_details, start_detail_pass
 from .rarities import fetch as fetch_seller_auctions
 from .storage import Storage
 
@@ -1722,6 +1723,17 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .tags{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px}
 .parts{color:#ff8a7a;border:1px solid rgba(255,77,61,.4);border-radius:8px;
  padding:2px 8px;font-weight:700}
+/* Straight under the photo: what the seller's own Condition Description says,
+   which is the only place "Pre-owned - Good" gets contradicted. */
+.flags{display:flex;flex-wrap:wrap;gap:6px;padding:11px 13px 0}
+.flags:empty{display:none}
+.fl{font-size:11px;font-weight:800;letter-spacing:.4px;border-radius:7px;
+ padding:3px 8px;border:1px solid}
+.fl.bad{color:#ff5b48;border-color:#ff4d3d;background:rgba(255,77,61,.13)}
+.fl.warn{color:#fbbf24;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
+.fl.good{color:#4ade80;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
+.mm{color:#8ba0bd;font-weight:700}
+.mm.ok{color:#7dd3fc}
 .inspect{margin-left:auto}
 .err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
  border-radius:11px;margin-top:16px;font-size:14px}
@@ -1769,7 +1781,22 @@ function fmtLeft(ms){
 }
 // Start on the top slice: the whole consignment runs to several hundred lots,
 // which is a slow parse and a slow paint on a phone. LIMIT 0 means everything.
-var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null;
+var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null, flagTries = 0;
+function flagHtml(flags){
+  if (!flags || !flags.length) return '';
+  return flags.map(function(f){
+    return '<span class="fl ' + esc(f.sev) + '">' + esc(f.label) + '</span>';
+  }).join('');
+}
+// Condition text lands after the photos do. Patch the chips into the cards
+// already on screen rather than re-rendering — a full repaint would throw
+// away your scroll position mid-browse.
+function patchFlags(items){
+  items.forEach(function(it, i){
+    var el = document.getElementById('fl-' + i);
+    if (el && it.flags) el.innerHTML = flagHtml(it.flags);
+  });
+}
 function paintClocks(){
   ITEMS.forEach(function(it, i){
     var el = document.getElementById('ends-' + i);
@@ -1786,6 +1813,7 @@ function render(items){
       + '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
       + (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
       + '</a>'
+      + '<div class="flags" id="fl-' + i + '">' + flagHtml(it.flags) + '</div>'
       + '<div class="info">'
       +   '<div class="row">'
       +     '<div class="bid">' + money(it.bid)
@@ -1797,6 +1825,8 @@ function render(items){
       +   '<p class="t">' + esc(it.title) + '</p>'
       +   '<div class="tags">'
       +     (it.for_parts ? '<span class="parts">FOR PARTS</span>' : '')
+      +     (it.mm ? '<span class="mm' + (it.mm >= 36 ? ' ok' : '') + '">'
+                     + it.mm + 'mm</span>' : '')
       +     '<a class="inspect" href="/item?id=' + encodeURIComponent(it.id) + '">inspect &rarr;</a>'
       +   '</div>'
       + '</div></div>';
@@ -1823,6 +1853,23 @@ function paintFoot(){
 }
 // A failed "show all" must not leave a dead disabled button behind: put the
 // cap back so the footer offers the expansion again.
+// The background pass is still reading condition text. Come back for it a few
+// times, backing off each round, then stop rather than polling forever.
+function pollFlags(){
+  if (flagTries >= 6) return;
+  flagTries++;
+  setTimeout(function(){
+    fetch('/api/rarities?limit=' + LIMIT + '&_=' + Date.now(), {cache: 'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (!d.items) return;
+        ITEMS = d.items;
+        patchFlags(d.items);
+        if (d.details_pending) pollFlags();
+      })
+      .catch(function(){});
+  }, 2000 * flagTries);
+}
 function failedExpand(){
   if (!LIMIT) { LIMIT = 60; paintFoot(); }
 }
@@ -1843,6 +1890,8 @@ function load(fresh){
       }
       TOTAL = d.total || d.items.length;
       render(d.items);
+      flagTries = 0;
+      if (d.details_pending) pollFlags();
       st.textContent = (d.items.length < TOTAL
           ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
           : TOTAL + ' auctions')
@@ -1982,13 +2031,20 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(params.get("limit", ["60"])[0])
             except ValueError:
                 limit = 60
+            shown = items[:limit] if limit > 0 else items
+            # Condition text arrives on a background pass; the page asks again
+            # while `details_pending` is non-zero and patches the chips in.
+            pending = apply_details(shown)
+            if pending:
+                start_detail_pass(ebay_client(), items, top=max(limit, 60))
             self._json(HTTPStatus.OK, {
                 "updated": _now_str(),
                 "seller": RARITIES_SELLER,
                 "store": RARITIES_STORE_URL,
                 "cached_secs": data["cached_secs"],
                 "total": len(items),
-                "items": items[:limit] if limit > 0 else items,
+                "details_pending": pending,
+                "items": shown,
             })
             return
         if parsed.path == "/api/item":

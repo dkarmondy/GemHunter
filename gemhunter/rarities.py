@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 from .config import load_config
@@ -52,6 +54,21 @@ BREITLING_TARGETS = ["navitimer", "chronomat", "cosmonaute", "aerospace",
                      "a23322", "b01", "top time", "premier"]
 NAVITIMER_WORDS = ["navitimer", "cosmonaute", "montbrillant"]
 
+# The two Breitling complications he watches for. "perpetual" alone is no use
+# as a signal — Rolex puts it on every Oyster Perpetual — so the calendar has
+# to be named, or Breitling's own "Quantième" spelling.
+PERPETUAL_WORDS = ["perpetual calendar", "quantieme", "quantième", "qp chrono"]
+RATTRAPANTE_WORDS = ["rattrapante", "split second", "split-second",
+                     "splitsecond", "doppelchrono"]
+LIMITED_WORDS = ["limited", " ltd", "one of ", "1 of "]
+# Solid precious metal only. Plated, filled, and two-tone are the opposite
+# signal, so they veto the match rather than merely failing to add to it.
+PRECIOUS_WORDS = ["platinum", "18k", "18kt", "18 k", "14k", "14kt",
+                  "yellow gold", "rose gold", "white gold", "pink gold",
+                  "solid gold"]
+NOT_PRECIOUS = ["plated", "gold filled", "gold-filled", " gf ", " gp ",
+                "gold tone", "gold-tone", "two-tone", "two tone", "10k gf"]
+
 # Rolex sport/tool references, as opposed to Datejust/Day-Date/Cellini dress.
 ROLEX_SPORTS = ["submariner", "gmt-master", "gmt master", "gmt", "daytona",
                 "cosmograph", "explorer", "sea-dweller", "sea dweller",
@@ -78,8 +95,10 @@ W_ACCESSORY = -70.0        # a part, not a watch: below everything but old Omega
 # decade, and no reference number.
 VINTAGE_MODELS = ["bubble back", "bubbleback", "bumper", "ovettone"]
 
-# ---- Tier bases. The order of these three is the answer to "what do I want
-# to see first", and everything else sorts underneath them. ----
+# ---- Tier bases. The order of these is the answer to "what do I want to see
+# first", and everything else sorts underneath them. ----
+T_BREITLING_GRAIL = 118.0  # Breitling perpetual calendar chrono / rattrapante
+T_NAVI_SPECIAL = 112.0     # Navitimer in precious metal, or a limited edition
 T_IWC_MODERN = 100.0       # IWC, 1980s onward
 T_NAVITIMER = 92.0         # Breitling Navitimer family
 T_ROLEX_PROJECT = 85.0     # Rolex sports that needs work — his bench, his edge
@@ -90,6 +109,10 @@ T_TASTE = 30.0             # any other brand he collects
 T_ROLEX_DRESS = 25.0       # Datejust, Day-Date, Cellini
 T_OMEGA = -40.0            # bottom by request, however nice
 W_PRE_1980 = -60.0         # bottom by request, unless it's one of his lanes
+W_SIZE_OK = 8.0            # 36mm and up: wearable
+W_SIZE_SMALL = -25.0       # under 36mm, however good the watch is
+SIZE_MIN = 36.0
+_MM_RE = re.compile(r"(\d{2}(?:\.\d)?)\s*mm", re.I)
 
 # Pre-1980 is rarely stated as a year (2 of 420 titles carried one), so it is
 # inferred: the seller's own "vintage", an explicit old year or decade, and —
@@ -138,6 +161,24 @@ def is_accessory(t: str) -> bool:
     return False
 
 
+def case_mm(t: str):
+    """Case diameter off the title — they state it on nearly every lot."""
+    for raw in _MM_RE.findall(t):
+        try:
+            mm = float(raw)
+        except ValueError:
+            continue
+        if 20 <= mm <= 60:          # a plausible wristwatch, not a lug width
+            return mm
+    return None
+
+
+def _is_precious(t: str) -> bool:
+    if any(k in t for k in NOT_PRECIOUS):
+        return False
+    return any(k in t for k in PRECIOUS_WORDS)
+
+
 def looks_pre_1980(t: str) -> bool:
     if _OLD_YEAR_RE.search(t) or _OLD_DECADE_RE.search(t):
         return True
@@ -161,11 +202,20 @@ def taste(title: str) -> float:
     rolex_sports = core_sports or (is_rolex and any(k in t for k in ROLEX_OYSTER))
     project = any(k in t for k in PROJECT_KEYWORDS)
 
-    if _is_iwc(t) and not looks_pre_1980(t):
+    breitling = "breitling" in t
+    navitimer = breitling and any(k in t for k in NAVITIMER_WORDS)
+    grail = breitling and (any(k in t for k in PERPETUAL_WORDS)
+                           or any(k in t for k in RATTRAPANTE_WORDS))
+
+    if grail:
+        score, protected = T_BREITLING_GRAIL, True
+    elif navitimer and (_is_precious(t) or any(k in t for k in LIMITED_WORDS)):
+        score, protected = T_NAVI_SPECIAL, True
+    elif _is_iwc(t) and not looks_pre_1980(t):
         score, protected = T_IWC_MODERN, True
         if any(k in t for k in IWC_TARGETS):
             score += 10
-    elif "breitling" in t and any(k in t for k in NAVITIMER_WORDS):
+    elif navitimer:
         score, protected = T_NAVITIMER, True
     elif rolex_sports and project:
         score, protected = T_ROLEX_PROJECT, True
@@ -175,7 +225,7 @@ def taste(title: str) -> float:
         score, protected = T_ROLEX_SPORTS, core_sports
     elif "omega" in t:
         score, protected = T_OMEGA, False
-    elif "breitling" in t:
+    elif breitling:
         score, protected = T_BREITLING, False
         if any(k in t for k in BREITLING_TARGETS):
             score += 6
@@ -203,6 +253,9 @@ def taste(title: str) -> float:
         score += 4
     if not protected and looks_pre_1980(t):
         score += W_PRE_1980
+    mm = case_mm(t)
+    if mm is not None:
+        score += W_SIZE_OK if mm >= SIZE_MIN else W_SIZE_SMALL
     return score
 
 
@@ -213,6 +266,9 @@ def priority_tag(title: str):
     t = " " + (title or "").lower() + " "
     if is_accessory(t):
         return None
+    if "breitling" in t and (any(k in t for k in PERPETUAL_WORDS)
+                             or any(k in t for k in RATTRAPANTE_WORDS)):
+        return "Breitling grail"
     if _is_iwc(t) and not looks_pre_1980(t):
         return "IWC"
     if "breitling" in t and any(k in t for k in NAVITIMER_WORDS):
@@ -221,6 +277,72 @@ def priority_tag(title: str):
             and any(k in t for k in ROLEX_SPORTS + ROLEX_OYSTER):
         return "Rolex project"
     return None
+
+
+# ---------------------------------------------------------------------------
+# What the Condition Description actually says. eBay's own condition field is
+# "Pre-owned - Good" on almost everything they list, including watches their
+# own description calls non-running, so the description is the only honest
+# read of what you would be bidding on.
+# ---------------------------------------------------------------------------
+
+# Every listing ends with the same disclaimer — that it will "likely require a
+# service", that cases are "assumed to have been polished", that nothing was
+# "tested for accuracy". Flagging boilerplate would mark all 200-odd lots
+# identically, so everything from that sentence on is cut before matching.
+_BOILERPLATE_RE = re.compile(
+    r"(?i)\bas an estate watch\b|\bdue to unknown service history\b")
+
+# (pattern, chip label, severity). Order matters: first match per label wins,
+# and the page shows them in this order, so the deal-breakers come first.
+CONDITION_FLAGS = [
+    (r"currently non-?running|not currently running|\bnot running\b"
+     r"|does\s*n[o']?t run", "NOT RUNNING", "bad"),
+    (r"sold as-?is for parts|for parts or repair", "FOR PARTS", "bad"),
+    (r"functions? (?:have been tested and are|are) non-?working"
+     r"|functions? (?:are|is) not working", "FUNCTIONS DEAD", "bad"),
+    (r"does\s*n[o']?t wind|will not wind|cannot be wound", "WON'T WIND", "bad"),
+    (r"cannot be set|can\s*n[o']?t be set|does\s*n[o']?t set", "WON'T SET", "bad"),
+    # On a vintage Rolex this is most of the value gone, so it reads as loudly
+    # as a dead movement.
+    (r"dial is aftermarket|aftermarket dial|re-?dial|refinished dial",
+     "AFTERMARKET DIAL", "bad"),
+    (r"lume .{0,40}re-?applied|re-?lumed|lume has been", "RELUMED", "bad"),
+    (r"aftermarket|is a replacement|has been replaced", "REPLACED PART", "bad"),
+    (r"\bis missing\b|missing its|missing the", "MISSING PART", "bad"),
+    (r"movement .{0,30}loose|loose rotor|rattling inside", "LOOSE MOVEMENT", "bad"),
+    (r"chronograph .{0,40}not working|pushers? .{0,30}not working"
+     r"|pushers? are loose", "CHRONO FAULT", "bad"),
+    (r"crystal .{0,20}crack|cracked|chipped", "CRACKED", "bad"),
+    (r"\brust\b|corrosion|water damage", "RUST / WATER", "bad"),
+    (r"crown is loose|crown is not screwing|crown .{0,20}stripped",
+     "CROWN FAULT", "warn"),
+    (r"bezel is seized|will not rotate|difficulty rotating"
+     r"|difficult to rotate", "BEZEL STUCK", "warn"),
+    (r"considerable scratches|heavy scratches|significant wear|deep(?:er)? scratch",
+     "HEAVY WEAR", "warn"),
+    (r"stretch(?:ed)? bracelet|bracelet .{0,20}stretch", "STRETCHED", "warn"),
+    (r"currently running", "RUNNING", "good"),
+]
+CONDITION_FLAGS = [(re.compile(p, re.I), label, sev)
+                   for p, label, sev in CONDITION_FLAGS]
+
+
+def condition_flags(text: str) -> list[dict]:
+    """Chips for the card, worst first, off the seller's own description."""
+    if not text:
+        return []
+    cut = _BOILERPLATE_RE.search(text)
+    body = text[:cut.start()] if cut else text
+    out, seen = [], set()
+    for rx, label, sev in CONDITION_FLAGS:
+        if label not in seen and rx.search(body):
+            out.append({"label": label, "sev": sev})
+            seen.add(label)
+    # "Running" next to a fault is noise; the fault is the news.
+    if any(f["sev"] == "bad" for f in out):
+        out = [f for f in out if f["label"] != "RUNNING"]
+    return out
 
 
 def item_dict(listing: Listing) -> dict:
@@ -236,7 +358,9 @@ def item_dict(listing: Listing) -> dict:
         "bids": listing.bid_count,
         "ends": listing.item_end_date,
         "for_parts": "parts" in (listing.condition or "").lower(),
+        "mm": case_mm(" " + (listing.title or "").lower() + " "),
         "taste": taste(listing.title),
+        "flags": None,          # filled in by the detail pass, if it has run
     }
 
 
@@ -246,6 +370,64 @@ def fetch(client: EbayClient) -> list[dict]:
              if l.active and not excluded(l.title)]
     items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
     return items
+
+
+# A listing's condition text never changes, so once fetched it is kept for the
+# life of the process: a week of browsing costs one call per lot, not one per
+# page view. Only the top slice is ever fetched — nobody reads to lot 180.
+_details_lock = threading.Lock()
+_details: dict[str, list] = {}
+_details_running = False
+
+
+def _load_detail(client: EbayClient, item_id: str) -> list:
+    try:
+        d = client.get_item(item_id)
+    except Exception:
+        return []
+    return condition_flags(d.get("conditionDescription") or "")
+
+
+def apply_details(items: list[dict]) -> int:
+    """Attach known flags; return how many of these are still unfetched."""
+    with _details_lock:
+        pending = 0
+        for item in items:
+            if item["id"] in _details:
+                item["flags"] = _details[item["id"]]
+            else:
+                pending += 1
+        return pending
+
+
+def start_detail_pass(client: EbayClient, items: list[dict], top: int = 60,
+                      workers: int = 6) -> None:
+    """Fetch condition text for the top lots in the background.
+
+    Kept off the request path deliberately: sixty sequential item lookups is
+    twenty seconds, and the photos are worth showing long before the chips are.
+    """
+    global _details_running
+    with _details_lock:
+        if _details_running:
+            return
+        todo = [i["id"] for i in items[:top] if i["id"] not in _details]
+        if not todo:
+            return
+        _details_running = True
+
+    def work():
+        global _details_running
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                done = list(pool.map(lambda i: (i, _load_detail(client, i)), todo))
+            with _details_lock:
+                _details.update(dict(done))
+        finally:
+            with _details_lock:
+                _details_running = False
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
