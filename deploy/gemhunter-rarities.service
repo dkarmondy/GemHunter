@@ -1,0 +1,9 @@
+[Unit]
+Description=National Rarities new-drop digest
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dkarm
+WorkingDirectory=/home/dkarm/Projects/GemHunter
+ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.rarities --db /mnt/ssd/gemhunter/gemhunter.db

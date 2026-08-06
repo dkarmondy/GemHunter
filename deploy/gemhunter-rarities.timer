@@ -1,0 +1,13 @@
+[Unit]
+Description=Check National Rarities for newly listed lots
+
+[Timer]
+# Their consignment goes up through the week and closes Sunday evening, so a
+# twice-daily check catches a drop within hours without nagging. Each run only
+# pushes when it finds lots it has never seen, so quiet days stay silent.
+OnCalendar=*-*-* 09,18:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

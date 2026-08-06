@@ -122,6 +122,18 @@ CREATE TABLE IF NOT EXISTS listing_observations (
 );
 CREATE INDEX IF NOT EXISTS idx_observations_item ON listing_observations(item_id, observed_at);
 
+-- Which National Rarities lots have already been reported. Kept apart from
+-- `listings` because these are not scout output: nothing here was gated,
+-- scored, or chosen — it is the seller's whole consignment, and the only
+-- question asked of it is "have I told him about this one yet?".
+CREATE TABLE IF NOT EXISTS rarities_seen (
+    item_id     TEXT PRIMARY KEY,
+    title       TEXT,
+    ends        TEXT,
+    taste       REAL,
+    first_seen  REAL
+);
+
 CREATE TABLE IF NOT EXISTS comps (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     source        TEXT,      -- my-purchase | my-sale | bid-history | insights
@@ -461,6 +473,29 @@ class Storage:
     def _with_relist_counts(self, rows: list[dict]) -> list[dict]:
         """Backward-compatible alias for older call sites."""
         return self._with_relist_groups(rows, collapse=False)
+
+    def has_rarities_history(self) -> bool:
+        """False only before the very first sweep, when everything looks new."""
+        return bool(self._conn.execute(
+            "SELECT 1 FROM rarities_seen LIMIT 1").fetchone())
+
+    def record_rarities(self, items: list[dict]) -> list[dict]:
+        """Remember these lots; hand back only the ones never seen before."""
+        if not items:
+            return []
+        known = {r["item_id"] for r in self._conn.execute(
+            "SELECT item_id FROM rarities_seen")}
+        fresh = [i for i in items if i["id"] not in known]
+        now = time.time()
+        self._conn.executemany(
+            """INSERT OR IGNORE INTO rarities_seen
+                   (item_id, title, ends, taste, first_seen)
+               VALUES (?, ?, ?, ?, ?)""",
+            [(i["id"], i.get("title", ""), i.get("ends", ""),
+              i.get("taste", 0), now) for i in fresh],
+        )
+        self._conn.commit()
+        return fresh
 
     def feedback_rows(self, limit: int = 500) -> list[dict]:
         cur = self._conn.execute(

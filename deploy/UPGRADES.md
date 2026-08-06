@@ -71,3 +71,41 @@ Optional polish:
 
 Nothing is exposed publicly: both devices make outbound connections only, and only
 devices on your tailnet can reach the Pi.
+
+## 4. National Rarities new-drop digest
+
+One push notification when `nationalrarities` lists watches you have not been
+told about yet, leading with IWC and Breitling Navitimer. Quiet by default: a
+run that finds nothing new sends nothing.
+
+**Pushover keys first** — without them the digest only prints to the journal.
+Create an application at <https://pushover.net>, then on the Pi add to
+`~/Projects/GemHunter/.env`:
+
+```
+PUSHOVER_USER_KEY=...
+PUSHOVER_API_TOKEN=...
+```
+
+Install the timer:
+
+```bash
+cd ~/Projects/GemHunter && git pull
+sudo cp deploy/gemhunter-rarities.service deploy/gemhunter-rarities.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now gemhunter-rarities.timer
+```
+
+The first run seeds the whole current consignment (a few hundred lots) and
+sends nothing — it has no way to know what you have already browsed. Every run
+after that reports only genuine arrivals.
+
+```bash
+systemctl list-timers gemhunter-rarities        # when it next fires
+journalctl -u gemhunter-rarities -n 30          # what the last run found
+.venv/bin/python -m gemhunter.rarities \
+    --db /mnt/ssd/gemhunter/gemhunter.db --dry-run   # print, don't push
+```
+
+Runs twice a day (09:00 and 18:00, jittered). To change that, edit
+`OnCalendar` in the timer and `sudo systemctl daemon-reload`.

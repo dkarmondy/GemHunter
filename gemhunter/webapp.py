@@ -21,10 +21,9 @@ import requests
 
 from .config import load_config
 from .ebay import EbayClient
-from .knowledge import (CHRONO_KEYWORDS, COLLECTOR_TARGETS, IWC_TARGETS,
-                        PROJECT_KEYWORDS, QUARTZ_MODELS, TASTE_BRANDS,
-                        VALUED_CALIBERS)
-from .models import Listing
+from .rarities import SELLER as RARITIES_SELLER
+from .rarities import STORE_URL as RARITIES_STORE_URL
+from .rarities import fetch as fetch_seller_auctions
 from .storage import Storage
 
 try:
@@ -1064,93 +1063,28 @@ def fetch_item(ref: str) -> dict:
 # not an alert stream. Everything they list is shown; taste only sets the order.
 # ---------------------------------------------------------------------------
 
-RARITIES_SELLER = "nationalrarities"
-RARITIES_STORE_URL = "https://www.ebay.com/str/turnaroundrarities"
 RARITIES_TTL = 180  # seconds; reopening the tab shouldn't cost an eBay sweep
 
 _rarities_lock = threading.Lock()
 _rarities_cache: dict = {"ts": 0.0, "items": None}
 
-# Their Rolex goes for full money; the 90s–2020s IWC and Breitling is where the
-# value hides, so those two brands outrank everything — Rolex included.
-_BREITLING_TARGETS = ["navitimer", "chronomat", "cosmonaute", "aerospace",
-                      "superocean", "avenger", "emergency", "montbrillant",
-                      "a23322", "b01", "top time", "premier"]
-_RARITIES_DOWNRANK = ["quartz", "ladies", "lady's", "ladys", "women", "girls",
-                      "pocket watch", "smartwatch", "smart watch", "apple watch"]
-# They also auction loose bracelets, straps, and bezels under the same brands.
-# Those never say "watch" in the title, so an accessory word without it means
-# the picture is a strap — sort it under every actual watch.
-_ACCESSORY_WORDS = ["bracelet", "strap", "band", "buckle", "clasp", "bezel",
-                    "links", "case back"]
-
-
-def _rarities_taste(title: str) -> float:
-    t = " " + (title or "").lower() + " "
-    score = 0.0
-    if "iwc" in t or "schaffhausen" in t:
-        score += 40
-        if any(k in t for k in IWC_TARGETS):
-            score += 10
-    elif "breitling" in t:
-        score += 36
-        if any(k in t for k in _BREITLING_TARGETS):
-            score += 8
-    elif "rolex" in t or "tudor" in t:
-        score += 12
-    elif any(b in t for b in TASTE_BRANDS):
-        score += 20
-    if any(k in t for k in CHRONO_KEYWORDS):
-        score += 6
-    for cal, (pts, column) in VALUED_CALIBERS.items():
-        if cal in t:
-            score += pts * 2 + (4 if column else 0)
-            break
-    if any(k in t for k in COLLECTOR_TARGETS):
-        score += 4
-    # "Needs a little work" is the whole reason to shop this seller.
-    if any(k in t for k in PROJECT_KEYWORDS):
-        score += 4
-    if any(k in t for k in _RARITIES_DOWNRANK) or any(k in t for k in QUARTZ_MODELS):
-        score -= 30
-    if "watch" not in t and any(k in t for k in _ACCESSORY_WORDS):
-        score -= 40
-    return score
-
-
-def _rarities_item(listing: Listing, likes, dislikes) -> dict:
-    bag = _tokens(listing.title)
-    boost = min(4.0, sum(min(likes[t], 3) for t in bag) * 0.18) \
-        - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22)
-    return {
-        "id": listing.item_id,
-        "title": listing.title,
-        "url": listing.url,
-        # Search hands back a thumbnail URL; the size lives in the filename,
-        # so rewrite it for a picture-first scroll (s-l800 ≈ 60–120 KB).
-        "image": re.sub(r"s-l\d+", "s-l800", listing.image_url)
-                 if listing.image_url else "",
-        "bid": listing.price,
-        "bids": listing.bid_count,
-        "ends": listing.item_end_date,
-        "for_parts": "parts" in (listing.condition or "").lower(),
-        "taste": round(_rarities_taste(listing.title) + boost, 2),
-    }
-
 
 def fetch_rarities(db_path: str, fresh: bool = False) -> dict:
+    """The week's lots, taste-ranked, with your thumbs feedback layered on top."""
     with _rarities_lock:
         age = time.time() - _rarities_cache["ts"]
         if _rarities_cache["items"] is not None and age < RARITIES_TTL and not fresh:
             return {"cached_secs": int(age), "items": _rarities_cache["items"]}
-    listings = ebay_client().seller_auctions(RARITIES_SELLER)
+    items = fetch_seller_auctions(ebay_client())
     storage = Storage(db_path)
     try:
         likes, dislikes = _preference_profile(storage.feedback_rows())
     finally:
         storage.close()
-    items = [_rarities_item(l, likes, dislikes) for l in listings if l.active]
-    # Taste sets the order; among equals the one ending first goes on top.
+    for item in items:
+        bag = _tokens(item["title"])
+        boost = min(4.0, sum(min(likes[t], 3) for t in bag) * 0.18)             - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22)
+        item["taste"] = round(item["taste"] + boost, 2)
     items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
     with _rarities_lock:
         _rarities_cache["ts"] = time.time()

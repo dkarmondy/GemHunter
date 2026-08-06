@@ -73,6 +73,10 @@ class Notifier:
                    f"{_cost_note(l)}{_origin_note(l)}{seller}")
         self._dispatch(title, message, l.url)
 
+    def send_digest(self, title: str, message: str, url: str = "") -> None:
+        """One notification summarising many listings, not a single gem."""
+        self._dispatch(title, message, url)
+
     def _dispatch(self, title: str, message: str, url: str) -> None:
         if not self.live:
             print(f"[ALERT] {title}\n    {message}\n    {url}")
