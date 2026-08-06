@@ -34,43 +34,162 @@ except Exception:
 SELLER = "nationalrarities"
 STORE_URL = "https://www.ebay.com/str/turnaroundrarities"
 
-# Their Rolex goes for full money; the 90s–2020s IWC and Breitling is where the
-# value hides, so those two brands outrank everything — Rolex included.
+# ---------------------------------------------------------------------------
+# Hard exclusions — these never reach the page at all. A third of any given
+# week is fashion and mid-century American filler (measured 2026-08-06: 61
+# Bulova, 41 Seiko, 20 Elgin, 12 Gucci, 9 Tissot, 8 Wittnauer out of 420), and
+# scrolling past it is the whole problem this tab exists to solve.
+# ---------------------------------------------------------------------------
+BLOCKED_BRANDS = ["seiko", "tissot", "bulova", "gucci", "elgin", "wittnauer",
+                  "accutron"]
+BLOCKED_WORDS = ["quartz", "ladies", "lady's", "ladys", "women's", "womens",
+                 "girls", "pocket watch", "smartwatch", "smart watch",
+                 "apple watch", "tuning fork"]
+
+# Their Breitling is mostly Navitimer family; those lead, the rest follow.
 BREITLING_TARGETS = ["navitimer", "chronomat", "cosmonaute", "aerospace",
                      "superocean", "avenger", "emergency", "montbrillant",
                      "a23322", "b01", "top time", "premier"]
-DOWNRANK = ["quartz", "ladies", "lady's", "ladys", "women", "girls",
-            "pocket watch", "smartwatch", "smart watch", "apple watch"]
-# They also auction loose bracelets, straps, and bezels under the same brands.
-# Those never say "watch" in the title, so an accessory word without it means
-# the picture is a strap — sort it under every actual watch.
+NAVITIMER_WORDS = ["navitimer", "cosmonaute", "montbrillant"]
+
+# Rolex sport/tool references, as opposed to Datejust/Day-Date/Cellini dress.
+ROLEX_SPORTS = ["submariner", "gmt-master", "gmt master", "gmt", "daytona",
+                "cosmograph", "explorer", "sea-dweller", "sea dweller",
+                "yacht-master", "yachtmaster", "milgauss", "turn-o-graph",
+                "air king", "air-king"]
+# The Oyster Perpetual line straddles it: the tool-watch base, but also every
+# vintage dress Rolex (Bubble Back, 6634). Enough to reach the project tier
+# when it needs work, not enough to hold a 1940s dress piece near the top.
+ROLEX_OYSTER = ["oyster perpetual", "oyster-perpetual", "oyster"]
+
+# They auction loose bracelets, dials, and bezels under the same brand names.
+# The word "watch" can't distinguish them — "Rubber Strap Watch" is a watch,
+# "Watch Bracelet" is a bracelet — but word order can: whichever noun comes
+# last is what is actually being sold.
 ACCESSORY_WORDS = ["bracelet", "strap", "band", "buckle", "clasp", "bezel",
                    "links", "case back"]
+# Components are named in almost every title as descriptors ("Silver Dial
+# Watch"), so they only mean a parts listing when the lot is one — hence the
+# "lot of" qualifier rather than the word-order test.
+PART_WORDS = ["dial", "hands", "crown", "crystal", "movement", "parts", "case"]
+W_ACCESSORY = -70.0        # a part, not a watch: below everything but old Omega
 
-# The digest leads with these two and summarises the rest: IWC in any form, and
-# the Navitimer family specifically rather than all Breitling.
-NAVITIMER_WORDS = ["navitimer", "cosmonaute", "montbrillant"]
+# Model names that date themselves, for the titles that carry no year, no
+# decade, and no reference number.
+VINTAGE_MODELS = ["bubble back", "bubbleback", "bumper", "ovettone"]
+
+# ---- Tier bases. The order of these three is the answer to "what do I want
+# to see first", and everything else sorts underneath them. ----
+T_IWC_MODERN = 100.0       # IWC, 1980s onward
+T_NAVITIMER = 92.0         # Breitling Navitimer family
+T_ROLEX_PROJECT = 85.0     # Rolex sports that needs work — his bench, his edge
+T_ROLEX_SPORTS = 45.0      # same models, nothing wrong with them
+T_BREITLING = 42.0
+T_TUDOR = 38.0
+T_TASTE = 30.0             # any other brand he collects
+T_ROLEX_DRESS = 25.0       # Datejust, Day-Date, Cellini
+T_OMEGA = -40.0            # bottom by request, however nice
+W_PRE_1980 = -60.0         # bottom by request, unless it's one of his lanes
+
+# Pre-1980 is rarely stated as a year (2 of 420 titles carried one), so it is
+# inferred: the seller's own "vintage", an explicit old year or decade, and —
+# for Rolex only — reference length, where 4 digits means pre-80s, 5 means
+# 1977 onward, 6 means 2000s. That digit rule is Rolex's alone; IWC's 4-digit
+# refs (3706, 3253, 3713) are exactly the 80s-onward pieces he hunts.
+_OLD_YEAR_RE = re.compile(r"\b(19[0-7]\d)\b")
+_OLD_DECADE_RE = re.compile(r"(?i)\b(?:19)?([2-7]0)'?s\b")
+_ROLEX_REF_RE = re.compile(r"(?i)ref\.?\s*#?\s*(\d{4,6})")
 
 
 def _is_iwc(t: str) -> bool:
     return "iwc" in t or "schaffhausen" in t
 
 
-def taste(title: str) -> float:
+def excluded(title: str):
+    """Reason this lot should never be shown, or None to keep it."""
     t = " " + (title or "").lower() + " "
-    score = 0.0
-    if _is_iwc(t):
-        score += 40
+    for brand in BLOCKED_BRANDS:
+        if brand in t:
+            return brand
+    for word in BLOCKED_WORDS:
+        if word in t:
+            return word
+    for model in QUARTZ_MODELS:
+        if model in t:
+            return "quartz model"
+    return None
+
+
+def is_accessory(t: str) -> bool:
+    """True when a part, not a watch, is the thing being sold.
+
+    Decided by word order rather than presence: "Rubber Strap Watch" is a
+    watch, "Watch Bracelet" is a bracelet, and "Navitimer Bracelet" names no
+    watch at all. "Watch Head" stays a watch — a head is the watch itself,
+    minus its bracelet, and is exactly what he buys to rebuild.
+    """
+    last_watch = t.rfind("watch")
+    for word in ACCESSORY_WORDS:
+        at = t.rfind(word)
+        if at >= 0 and at > last_watch:
+            return True
+    if "lot of" in t and any(w in t for w in PART_WORDS + ACCESSORY_WORDS):
+        return True
+    return False
+
+
+def looks_pre_1980(t: str) -> bool:
+    if _OLD_YEAR_RE.search(t) or _OLD_DECADE_RE.search(t):
+        return True
+    if any(m in t for m in VINTAGE_MODELS):
+        return True
+    if "rolex" in t:
+        found = _ROLEX_REF_RE.search(t)
+        if found and len(found.group(1)) == 4:
+            return True
+    return "vintage" in t
+
+
+def taste(title: str) -> float:
+    """Tier first, then the usual modifiers. Tier order is the whole point."""
+    t = " " + (title or "").lower() + " "
+    # A part is never a lot he is shopping for here, whatever brand is on it.
+    if is_accessory(t):
+        return W_ACCESSORY
+    is_rolex = "rolex" in t
+    core_sports = is_rolex and any(k in t for k in ROLEX_SPORTS)
+    rolex_sports = core_sports or (is_rolex and any(k in t for k in ROLEX_OYSTER))
+    project = any(k in t for k in PROJECT_KEYWORDS)
+
+    if _is_iwc(t) and not looks_pre_1980(t):
+        score, protected = T_IWC_MODERN, True
         if any(k in t for k in IWC_TARGETS):
             score += 10
+    elif "breitling" in t and any(k in t for k in NAVITIMER_WORDS):
+        score, protected = T_NAVITIMER, True
+    elif rolex_sports and project:
+        score, protected = T_ROLEX_PROJECT, True
+    elif rolex_sports:
+        # Not a project, but still his lane. Only the named sport models are
+        # held above the age rule; a vintage Oyster dress piece sinks.
+        score, protected = T_ROLEX_SPORTS, core_sports
+    elif "omega" in t:
+        score, protected = T_OMEGA, False
     elif "breitling" in t:
-        score += 36
+        score, protected = T_BREITLING, False
         if any(k in t for k in BREITLING_TARGETS):
-            score += 8
-    elif "rolex" in t or "tudor" in t:
-        score += 12
+            score += 6
+    elif "tudor" in t:
+        score, protected = T_TUDOR, False
+    elif "rolex" in t:
+        score, protected = T_ROLEX_DRESS, False
+    elif _is_iwc(t):                      # pre-80s IWC: wanted, but not a lead
+        score, protected = T_TASTE, False
     elif any(b in t for b in TASTE_BRANDS):
-        score += 20
+        score, protected = T_TASTE, False
+    else:
+        score, protected = 0.0, False
+
     if any(k in t for k in CHRONO_KEYWORDS):
         score += 6
     for cal, (pts, column) in VALUED_CALIBERS.items():
@@ -80,26 +199,27 @@ def taste(title: str) -> float:
     if any(k in t for k in COLLECTOR_TARGETS):
         score += 4
     # "Needs a little work" is the whole reason to shop this seller.
-    if any(k in t for k in PROJECT_KEYWORDS):
+    if project:
         score += 4
-    if any(k in t for k in DOWNRANK) or any(k in t for k in QUARTZ_MODELS):
-        score -= 30
-    if "watch" not in t and any(k in t for k in ACCESSORY_WORDS):
-        score -= 40
+    if not protected and looks_pre_1980(t):
+        score += W_PRE_1980
     return score
 
 
 def priority_tag(title: str):
-    """'IWC' / 'Navitimer' for the lots that lead the digest, else None."""
+    """The lanes that lead the digest, or None for everything else."""
+    if excluded(title):
+        return None
     t = " " + (title or "").lower() + " "
-    if any(k in t for k in DOWNRANK) or any(k in t for k in QUARTZ_MODELS):
+    if is_accessory(t):
         return None
-    if "watch" not in t and any(k in t for k in ACCESSORY_WORDS):
-        return None
-    if _is_iwc(t):
+    if _is_iwc(t) and not looks_pre_1980(t):
         return "IWC"
     if "breitling" in t and any(k in t for k in NAVITIMER_WORDS):
         return "Navitimer"
+    if "rolex" in t and any(k in t for k in PROJECT_KEYWORDS) \
+            and any(k in t for k in ROLEX_SPORTS + ROLEX_OYSTER):
+        return "Rolex project"
     return None
 
 
@@ -121,8 +241,9 @@ def item_dict(listing: Listing) -> dict:
 
 
 def fetch(client: EbayClient) -> list[dict]:
-    """Every auction they have running now, best-first."""
-    items = [item_dict(l) for l in client.seller_auctions(SELLER) if l.active]
+    """Every auction worth his eye, best-first. Blocked brands never appear."""
+    items = [item_dict(l) for l in client.seller_auctions(SELLER)
+             if l.active and not excluded(l.title)]
     items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
     return items
 
