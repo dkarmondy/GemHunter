@@ -97,6 +97,33 @@ class EbayClient:
         resp.raise_for_status()
         return self._parse(resp.json(), search.name)
 
+    def seller_auctions(self, seller: str, category: str = WRISTWATCH_CATEGORY,
+                        max_pages: int = 3) -> list[Listing]:
+        """Every active auction one seller is running, soonest-ending first.
+
+        Browse requires a search anchor (q / category_ids / …) even when the
+        sellers filter alone defines the result set, so the category rides
+        along. Paged because a big consignment house lists in the hundreds.
+        """
+        headers = self._headers()
+        listings: list[Listing] = []
+        for page in range(max_pages):
+            params = {
+                "category_ids": category,
+                "filter": "buyingOptions:{AUCTION},sellers:{" + seller + "}",
+                "sort": "endingSoonest",
+                "limit": 200,
+                "offset": page * 200,
+            }
+            resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            payload = resp.json()
+            batch = self._parse(payload, f"seller:{seller}")
+            listings.extend(batch)
+            if len(batch) < 200:
+                break
+        return listings
+
     def get_item(self, item_id: str) -> dict:
         headers = self._headers()
         resp = requests.get(ITEM_URL + item_id, headers=headers, timeout=30)

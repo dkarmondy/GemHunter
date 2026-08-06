@@ -10,6 +10,7 @@ import argparse
 import json
 import re
 import threading
+import time
 from collections import Counter
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -20,6 +21,10 @@ import requests
 
 from .config import load_config
 from .ebay import EbayClient
+from .knowledge import (CHRONO_KEYWORDS, COLLECTOR_TARGETS, IWC_TARGETS,
+                        PROJECT_KEYWORDS, QUARTZ_MODELS, TASTE_BRANDS,
+                        VALUED_CALIBERS)
+from .models import Listing
 from .storage import Storage
 
 try:
@@ -1053,6 +1058,107 @@ def fetch_item(ref: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# National Rarities: the turnaroundrarities weekly auction drop. One trusted
+# consignment seller (source of the IWC 3706, Navitimer A23322, and Chronomat),
+# whose auctions mostly end Sunday night — so this is a browse-the-week page,
+# not an alert stream. Everything they list is shown; taste only sets the order.
+# ---------------------------------------------------------------------------
+
+RARITIES_SELLER = "nationalrarities"
+RARITIES_STORE_URL = "https://www.ebay.com/str/turnaroundrarities"
+RARITIES_TTL = 180  # seconds; reopening the tab shouldn't cost an eBay sweep
+
+_rarities_lock = threading.Lock()
+_rarities_cache: dict = {"ts": 0.0, "items": None}
+
+# Their Rolex goes for full money; the 90s–2020s IWC and Breitling is where the
+# value hides, so those two brands outrank everything — Rolex included.
+_BREITLING_TARGETS = ["navitimer", "chronomat", "cosmonaute", "aerospace",
+                      "superocean", "avenger", "emergency", "montbrillant",
+                      "a23322", "b01", "top time", "premier"]
+_RARITIES_DOWNRANK = ["quartz", "ladies", "lady's", "ladys", "women", "girls",
+                      "pocket watch", "smartwatch", "smart watch", "apple watch"]
+# They also auction loose bracelets, straps, and bezels under the same brands.
+# Those never say "watch" in the title, so an accessory word without it means
+# the picture is a strap — sort it under every actual watch.
+_ACCESSORY_WORDS = ["bracelet", "strap", "band", "buckle", "clasp", "bezel",
+                    "links", "case back"]
+
+
+def _rarities_taste(title: str) -> float:
+    t = " " + (title or "").lower() + " "
+    score = 0.0
+    if "iwc" in t or "schaffhausen" in t:
+        score += 40
+        if any(k in t for k in IWC_TARGETS):
+            score += 10
+    elif "breitling" in t:
+        score += 36
+        if any(k in t for k in _BREITLING_TARGETS):
+            score += 8
+    elif "rolex" in t or "tudor" in t:
+        score += 12
+    elif any(b in t for b in TASTE_BRANDS):
+        score += 20
+    if any(k in t for k in CHRONO_KEYWORDS):
+        score += 6
+    for cal, (pts, column) in VALUED_CALIBERS.items():
+        if cal in t:
+            score += pts * 2 + (4 if column else 0)
+            break
+    if any(k in t for k in COLLECTOR_TARGETS):
+        score += 4
+    # "Needs a little work" is the whole reason to shop this seller.
+    if any(k in t for k in PROJECT_KEYWORDS):
+        score += 4
+    if any(k in t for k in _RARITIES_DOWNRANK) or any(k in t for k in QUARTZ_MODELS):
+        score -= 30
+    if "watch" not in t and any(k in t for k in _ACCESSORY_WORDS):
+        score -= 40
+    return score
+
+
+def _rarities_item(listing: Listing, likes, dislikes) -> dict:
+    bag = _tokens(listing.title)
+    boost = min(4.0, sum(min(likes[t], 3) for t in bag) * 0.18) \
+        - min(4.0, sum(min(dislikes[t], 3) for t in bag) * 0.22)
+    return {
+        "id": listing.item_id,
+        "title": listing.title,
+        "url": listing.url,
+        # Search hands back a thumbnail URL; the size lives in the filename,
+        # so rewrite it for a picture-first scroll (s-l800 ≈ 60–120 KB).
+        "image": re.sub(r"s-l\d+", "s-l800", listing.image_url)
+                 if listing.image_url else "",
+        "bid": listing.price,
+        "bids": listing.bid_count,
+        "ends": listing.item_end_date,
+        "for_parts": "parts" in (listing.condition or "").lower(),
+        "taste": round(_rarities_taste(listing.title) + boost, 2),
+    }
+
+
+def fetch_rarities(db_path: str, fresh: bool = False) -> dict:
+    with _rarities_lock:
+        age = time.time() - _rarities_cache["ts"]
+        if _rarities_cache["items"] is not None and age < RARITIES_TTL and not fresh:
+            return {"cached_secs": int(age), "items": _rarities_cache["items"]}
+    listings = ebay_client().seller_auctions(RARITIES_SELLER)
+    storage = Storage(db_path)
+    try:
+        likes, dislikes = _preference_profile(storage.feedback_rows())
+    finally:
+        storage.close()
+    items = [_rarities_item(l, likes, dislikes) for l in listings if l.active]
+    # Taste sets the order; among equals the one ending first goes on top.
+    items.sort(key=lambda r: (-r["taste"], r["ends"] or "9999"))
+    with _rarities_lock:
+        _rarities_cache["ts"] = time.time()
+        _rarities_cache["items"] = items
+    return {"cached_secs": 0, "items": items}
+
+
+# ---------------------------------------------------------------------------
 # The dashboard. `/` is the board; every tool hangs off it and links back.
 # HUB_PORT is a second service (Watch Hub) on this same Pi, so its links are
 # built client-side from whatever hostname you arrived on — that keeps one
@@ -1066,6 +1172,8 @@ APPS = [
      "path": "/app", "blurb": "The ranked feed. Streams, saved gems, scoring brain."},
     {"id": "lookup", "name": "Listing lookup", "icon": "&#128269;", "where": "local",
      "path": "/item", "blurb": "Paste an eBay listing, get live JSON back."},
+    {"id": "rarities", "name": "National Rarities", "icon": "&#127963;", "where": "local",
+     "path": "/rarities", "blurb": "The turnaroundrarities weekly drop, ranked to your taste."},
     {"id": "search", "name": "Quick search", "icon": "&#9889;", "where": "hub",
      "path": "/search", "blurb": "Live eBay search, any query, newest first."},
     {"id": "lathe", "name": "Lathe outfits", "icon": "&#128296;", "where": "hub",
@@ -1645,6 +1753,153 @@ if (P.get('id')) go();
 """
 
 
+RARITIES_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#08111f"><title>National Rarities</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px 14px 48px;max-width:560px;margin:0 auto}
+h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.sub{color:#8ba0bd;font-size:13px;margin:0 0 6px}
+.refresh{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);
+ color:#e9eef6;width:44px;height:44px;border-radius:14px;font-size:20px;font-weight:800;
+ flex:none;display:grid;place-items:center}
+.refresh:disabled{opacity:.5}
+.status{font-size:12px;color:#8ba0bd;min-height:17px;margin-bottom:8px}
+.card{background:#0f1c30;border:1px solid #1d2f4c;border-radius:16px;
+ margin-top:14px;overflow:hidden}
+/* The picture IS the page — full-bleed inside the card, info rides below. */
+.shot{display:block;width:100%;min-height:200px;background:#0b1526}
+.info{padding:11px 13px 13px}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.bid{font-size:24px;font-weight:800;color:#f0d67a}
+.bid small{font-size:12px;font-weight:600;color:#8ba0bd;margin-left:6px}
+.ends{text-align:right;font-size:14px;font-weight:700;color:#7dd3fc;
+ font-variant-numeric:tabular-nums}
+.ends .left{display:block;font-size:12px;font-weight:600;color:#8ba0bd}
+.ends.soon,.ends.soon .left{color:#ff4d3d}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.ends.soon{animation:pulse 2s ease-in-out infinite}
+.t{margin:7px 0 0;color:#c9d6e8;font-size:13px;line-height:1.35;
+ display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.tags{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px}
+.parts{color:#ff8a7a;border:1px solid rgba(255,77,61,.4);border-radius:8px;
+ padding:2px 8px;font-weight:700}
+.inspect{margin-left:auto}
+.err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
+ border-radius:11px;margin-top:16px;font-size:14px}
+</style></head><body>
+<div class="head">
+  <div>
+    <h1><a href="/">&larr;</a> &nbsp;National Rarities</h1>
+    <p class="sub"><a href="__STORE__" target="_blank" rel="noopener">turnaroundrarities</a>
+    &middot; the week's auctions, ranked to your taste &middot; most end Sunday night</p>
+  </div>
+  <button class="refresh" id="refreshBtn" onclick="load(true)"
+          aria-label="Refresh">&#8635;</button>
+</div>
+<div class="status" id="status"></div>
+<div id="out"></div>
+<script>
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
+  function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function money(v){
+  var n = Number(v);
+  return isNaN(n) ? String(v)
+       : '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2,
+                                          maximumFractionDigits: 2});
+}
+// "Sun 6:42 PM" in the phone's own timezone — the day is the fact that
+// matters when everything funnels toward Sunday night.
+function endLabel(iso){
+  var d = new Date(iso);
+  if (isNaN(d)) return '';
+  return d.toLocaleString(undefined, {weekday:'short'}) + ' '
+       + d.toLocaleString(undefined, {hour:'numeric', minute:'2-digit'});
+}
+function fmtLeft(ms){
+  if (ms <= 0) return 'ended';
+  var t = Math.floor(ms / 1000);
+  var d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600),
+      m = Math.floor(t % 3600 / 60);
+  if (d) return d + 'd ' + h + 'h';
+  if (h) return h + 'h ' + m + 'm';
+  return m + 'm';
+}
+var ITEMS = [], ticker = null;
+function paintClocks(){
+  ITEMS.forEach(function(it, i){
+    var el = document.getElementById('ends-' + i);
+    if (!el || !it.ends) return;
+    var left = Date.parse(it.ends) - Date.now();
+    el.querySelector('.left').textContent = fmtLeft(left);
+    el.classList.toggle('soon', left > 0 && left < 3600000);
+  });
+}
+function render(items){
+  ITEMS = items;
+  document.getElementById('out').innerHTML = items.map(function(it, i){
+    return '<div class="card">'
+      + '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
+      + (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
+      + '</a>'
+      + '<div class="info">'
+      +   '<div class="row">'
+      +     '<div class="bid">' + money(it.bid)
+      +       '<small>' + (it.bids ? it.bids + ' bid' + (it.bids > 1 ? 's' : '')
+                                   : 'no bids yet') + '</small></div>'
+      +     '<div class="ends" id="ends-' + i + '">' + esc(endLabel(it.ends))
+      +       '<span class="left"></span></div>'
+      +   '</div>'
+      +   '<p class="t">' + esc(it.title) + '</p>'
+      +   '<div class="tags">'
+      +     (it.for_parts ? '<span class="parts">FOR PARTS</span>' : '')
+      +     '<a class="inspect" href="/item?id=' + encodeURIComponent(it.id) + '">inspect &rarr;</a>'
+      +   '</div>'
+      + '</div></div>';
+  }).join('');
+  if (ticker) clearInterval(ticker);
+  paintClocks();
+  ticker = setInterval(paintClocks, 30000);
+}
+function load(fresh){
+  var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
+  btn.disabled = true;
+  if (!ITEMS.length) st.textContent = 'Fetching the week\\u2019s auctions\\u2026';
+  fetch('/api/rarities' + (fresh ? '?fresh=1' : ''), {cache: 'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.error) {
+        if (!ITEMS.length)
+          document.getElementById('out').innerHTML =
+            '<div class="err">' + esc(d.error) + '</div>';
+        st.textContent = 'Refresh failed \\u2014 showing what was loaded.';
+        return;
+      }
+      render(d.items);
+      st.textContent = d.items.length + ' auctions \\u00b7 updated ' + d.updated
+        + (d.cached_secs ? ' (cached)' : '');
+    })
+    .catch(function(e){
+      if (!ITEMS.length)
+        document.getElementById('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
+      st.textContent = 'Refresh failed.';
+    })
+    .then(function(){ btn.disabled = false; });
+}
+// Coming back to the tab re-pulls through the server cache — current bids on
+// screen, but no eBay call unless the cache has actually gone stale.
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden && ITEMS.length) load(false);
+});
+load(false);
+</script></body></html>
+"""
+
+
 def _html() -> bytes:
     return (
         HTML
@@ -1730,6 +1985,35 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/item":
             self._send(HTTPStatus.OK, ITEM_PAGE.encode("utf-8"),
                        "text/html; charset=utf-8")
+            return
+        if parsed.path == "/rarities":
+            self._send(HTTPStatus.OK,
+                       RARITIES_PAGE.replace("__STORE__", RARITIES_STORE_URL)
+                                    .encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/rarities":
+            params = parse_qs(parsed.query)
+            fresh = params.get("fresh", [""])[0] in ("1", "true", "yes")
+            try:
+                data = fetch_rarities(self.db_path, fresh)
+            except RuntimeError as exc:
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+                return
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else 0
+                self._json(HTTPStatus.BAD_GATEWAY,
+                           {"error": f"eBay returned HTTP {code}"})
+                return
+            except requests.RequestException as exc:
+                self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+                return
+            self._json(HTTPStatus.OK, {
+                "updated": _now_str(),
+                "seller": RARITIES_SELLER,
+                "store": RARITIES_STORE_URL,
+                **data,
+            })
             return
         if parsed.path == "/api/item":
             params = parse_qs(parsed.query)
