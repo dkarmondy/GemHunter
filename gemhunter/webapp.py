@@ -1720,9 +1720,15 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .ends.soon{animation:pulse 2s ease-in-out infinite}
 .t{margin:7px 0 0;color:#c9d6e8;font-size:13px;line-height:1.35;
  display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.tags{display:flex;gap:8px;align-items:center;margin-top:8px;font-size:12px}
+.tags{display:flex;gap:8px;align-items:center;margin-top:10px;font-size:12px;
+ padding-top:9px;border-top:1px solid #17263f}
 .parts{color:#ff8a7a;border:1px solid rgba(255,77,61,.4);border-radius:8px;
  padding:2px 8px;font-weight:700}
+.copy{margin-left:auto;font:inherit;font-size:11px;font-weight:700;
+ color:#8ba0bd;background:transparent;border:1px solid #23395c;
+ border-radius:8px;padding:3px 9px}
+.copy:active{background:rgba(148,163,184,.15);color:#e9eef6}
+.copy.done{color:#4ade80;border-color:rgba(74,222,128,.5)}
 /* Straight under the photo: what the seller's own Condition Description says,
    which is the only place "Pre-owned - Good" gets contradicted. */
 .flags{display:flex;flex-wrap:wrap;gap:6px;padding:11px 13px 0}
@@ -1734,7 +1740,6 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .fl.good{color:#4ade80;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
 .mm{color:#8ba0bd;font-weight:700}
 .mm.ok{color:#7dd3fc}
-.inspect{margin-left:auto}
 .err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
  border-radius:11px;margin-top:16px;font-size:14px}
 .more{width:100%;font:inherit;font-weight:700;color:#e9eef6;background:#0f1c30;
@@ -1788,6 +1793,42 @@ function flagHtml(flags){
     return '<span class="fl ' + esc(f.sev) + '">' + esc(f.label) + '</span>';
   }).join('');
 }
+// The Pi serves plain http, where navigator.clipboard does not exist, so the
+// old textarea trick is the path that actually works on the phone.
+function copyText(text, btn){
+  var done = function(ok){
+    if (!btn) return;
+    var was = btn.textContent;
+    btn.textContent = ok ? 'copied \\u2713' : 'copy failed';
+    btn.classList.toggle('done', ok);
+    setTimeout(function(){
+      btn.textContent = was; btn.classList.remove('done');
+    }, 1800);
+  };
+  var legacy = function(){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    done(ok);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(text).then(function(){ done(true); }, legacy);
+    return;
+  }
+  legacy();
+}
+// The card's own record — title, bid, bids, closing time, size, score, and
+// whatever the condition description flagged. Everything the panel shows.
+function copyItem(i){
+  var it = ITEMS[i];
+  if (!it) return;
+  copyText(JSON.stringify(it, null, 2), document.getElementById('cp-' + i));
+}
 // Condition text lands after the photos do. Patch the chips into the cards
 // already on screen rather than re-rendering — a full repaint would throw
 // away your scroll position mid-browse.
@@ -1827,6 +1868,8 @@ function render(items){
       +     (it.for_parts ? '<span class="parts">FOR PARTS</span>' : '')
       +     (it.mm ? '<span class="mm' + (it.mm >= 36 ? ' ok' : '') + '">'
                      + it.mm + 'mm</span>' : '')
+      +     '<button type="button" class="copy" id="cp-' + i + '" '
+      +       'onclick="copyItem(' + i + ')">copy JSON</button>'
       +     '<a class="inspect" href="/item?id=' + encodeURIComponent(it.id) + '">inspect &rarr;</a>'
       +   '</div>'
       + '</div></div>';
