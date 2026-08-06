@@ -9,12 +9,17 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import threading
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
+import requests
+
+from .config import load_config
+from .ebay import EbayClient
 from .storage import Storage
 
 try:
@@ -127,7 +132,8 @@ HTML = r"""<!doctype html>
     .status{font-size:12px;color:var(--muted);margin-top:8px}
     .topActions{display:flex;gap:8px;padding-top:4px}
     .iconBtn{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);color:var(--text);
-      width:40px;height:40px;border-radius:13px;font-size:18px;font-weight:800}
+      width:40px;height:40px;border-radius:13px;font-size:18px;font-weight:800;
+      display:grid;place-items:center;text-decoration:none}
     .modeDock{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:16px}
     .mode{border:1px solid transparent;background:rgba(15,23,42,.62);color:var(--muted);
       border-radius:16px;padding:9px 4px 8px;text-align:center;font-size:11px;font-weight:800}
@@ -241,7 +247,7 @@ HTML = r"""<!doctype html>
       </div>
       <div class="topActions">
         <button class="iconBtn" onclick="openAbout()" aria-label="About GemHunter">i</button>
-        <button class="iconBtn" onclick="hardRefresh()" aria-label="Refresh">↻</button>
+        <a class="iconBtn" href="/" aria-label="Back to dashboard">&#8592;</a>
       </div>
     </div>
     <nav class="modeDock" id="modeDock"></nav>
@@ -415,7 +421,6 @@ function inactiveLabel(item){
 }
 function activeCollection(){ return COLLECTIONS.find(c => c.id === active) || COLLECTIONS[0]; }
 function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); setTimeout(()=>toast.classList.remove('show'), 1100); }
-function hardRefresh(){ window.location.href = window.location.pathname + '?v=' + Date.now(); }
 function openAbout(){ $('aboutBackdrop').classList.add('open'); }
 function closeAbout(){ $('aboutBackdrop').classList.remove('open'); }
 function backdropClose(ev){ if (ev.target.id === 'aboutBackdrop') closeAbout(); }
@@ -634,6 +639,1012 @@ renderModeDock(); installSortOptions(); renderRail(); loadCollection();
 """
 
 
+# ---------------------------------------------------------------------------
+# Live eBay lookup — one listing, straight from the Browse API on demand.
+# Everything else in this app reads the local DB; this is the one route that
+# goes out to eBay while you wait.
+# ---------------------------------------------------------------------------
+
+_ebay_lock = threading.Lock()
+_ebay_client = None
+
+
+def ebay_client() -> EbayClient:
+    """Built once, lazily: the app must still boot with no keys configured."""
+    global _ebay_client
+    with _ebay_lock:
+        if _ebay_client is None:
+            cfg = load_config()
+            if not cfg.has_ebay_keys:
+                raise RuntimeError(
+                    "EBAY_CLIENT_ID / EBAY_CLIENT_SECRET are not set — "
+                    "check .env in the service's working directory")
+            _ebay_client = EbayClient(
+                cfg.ebay_client_id, cfg.ebay_client_secret,
+                cfg.marketplace, cfg.buyer_country, cfg.buyer_postal_code)
+        return _ebay_client
+
+
+BROWSE_ID_RE = re.compile(r"v1\|\d+\|\d+")
+# The number a human can copy off a listing page or out of a URL. Handles
+# /itm/1234, /itm/some-title-slug/1234, ?item=1234, and a bare number.
+LEGACY_ID_RE = re.compile(
+    r"(?:/itm/(?:[^/?#]+/)?|[?&](?:item|iid)=|^)(\d{9,15})(?!\d)")
+
+# Redirects are only ever followed within eBay, so a share link can't be used
+# to make this Pi fetch an arbitrary address.
+EBAY_HOSTS = ("ebay.io", "ebay.us", "ebay.com", "ebay.co.uk", "ebay.de",
+              "ebay.fr", "ebay.it", "ebay.es", "ebay.ca", "ebay.com.au")
+
+
+def _is_ebay_host(netloc: str) -> bool:
+    host = netloc.lower().split("@")[-1].split(":")[0]
+    return any(host == h or host.endswith("." + h) for h in EBAY_HOSTS)
+
+
+def _find_id(text: str):
+    found = BROWSE_ID_RE.search(text)
+    if found:
+        return "browse", found.group(0)
+    found = LEGACY_ID_RE.search(text)
+    if found:
+        return "legacy", found.group(1)
+    return None
+
+
+def resolve_ebay_link(url: str, hops: int = 5) -> str:
+    """Follow an eBay share link far enough to expose the item id.
+
+    The share button on the eBay app hands out ebay.io/m/xxxx, which carries no
+    id at all. Only Location headers are read — the listing page itself 403s
+    for non-browser clients and its body is never needed.
+
+    Must be GET, not HEAD: eBay's short-link service answers HEAD with a 302 to
+    /n/error and only reveals the real target to a GET. stream=True keeps the
+    body off the wire, which is the reason HEAD looked attractive to begin with.
+    """
+    current = url
+    for _ in range(hops):
+        parsed = urlparse(current)
+        if not _is_ebay_host(parsed.netloc):
+            raise ValueError("that link doesn't point at eBay")
+        try:
+            resp = requests.get(current, allow_redirects=False, timeout=10,
+                                stream=True)
+            location = resp.headers.get("Location")
+            resp.close()
+        except requests.RequestException as exc:
+            raise ValueError(f"couldn't follow that link ({exc})") from exc
+        if not location:
+            return current
+        current = (location if "://" in location
+                   else f"{parsed.scheme}://{parsed.netloc}{location}")
+        if _find_id(current):
+            return current
+    return current
+
+
+def parse_item_ref(raw: str) -> tuple[str, str]:
+    """('browse'|'legacy', id) from a Browse id, a bare number, or any eBay URL."""
+    raw = (raw or "").strip()
+    if not raw:
+        raise ValueError("pass ?id= a listing id, an item number, or an eBay link")
+    found = _find_id(raw)
+    if found:
+        return found
+    if raw.lower().startswith(("http://", "https://")):
+        resolved = resolve_ebay_link(raw)
+        found = _find_id(resolved)
+        if found:
+            return found
+        raise ValueError("that's an eBay link, but not to a single listing"
+                         if resolved == raw else
+                         "that link redirected but never revealed a listing id")
+    raise ValueError("no listing id found in that text")
+
+
+def _strip_html(html: str) -> str:
+    """Seller descriptions are hand-rolled HTML; reduce to readable text."""
+    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html or "")
+    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>", "\n", text)
+    text = re.sub(r"<[^>]+>", " ", text)
+    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
+                         ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
+        text = text.replace(entity, char)
+    lines = [re.sub(r"[ \t\r\f\v]+", " ", ln).strip() for ln in text.split("\n")]
+    return "\n".join(ln for ln in lines if ln)
+
+
+# Aspect names vary by seller ("Case Size", "Case Diameter", "Dial Diameter"),
+# so promote by pattern rather than exact key. First match wins, and the
+# specific patterns are listed before the loose ones.
+SPEC_PATTERNS = [
+    ("Case size", r"case\s*(size|diameter)|dial\s*diameter|watch\s*size"),
+    ("Band/lug width", r"(band|strap|lug|bracelet)\s*(width|size)"),
+    ("Thickness", r"thick|depth"),
+    ("Weight", r"weight"),
+    ("Movement", r"movement|calib(er|re)"),
+]
+
+# Sentences in the description that mention a dimension worth reading.
+SPEC_HINT_RE = re.compile(
+    r"(?i)(thick|depth|weigh|\blug\b|band width|strap width|case size|"
+    r"case diameter|diameter|\d+\s?mm\b|\d+(\.\d+)?\s?(g|gram|grams|oz)\b)")
+
+
+def _key_specs(aspects: dict) -> tuple[list, list]:
+    """(promoted [label, value] pairs, aspect names consumed)."""
+    promoted, used = [], []
+    for label, pattern in SPEC_PATTERNS:
+        rx = re.compile(pattern, re.I)
+        for name, value in aspects.items():
+            if name in used or not rx.search(name or ""):
+                continue
+            promoted.append([label, value])
+            used.append(name)
+            break
+    return promoted, used
+
+
+# What the seller says is wrong with it. On a for-parts watch this decides
+# whether it's an afternoon at the bench or a donor, and it only ever appears
+# in prose — no aspect or API field carries it.
+FAULT_HINT_RE = re.compile(
+    r"(?i)\b(overwound|over-wound|not running|does ?n[o']t run|won'?t run|frozen|"
+    r"seized|stuck|rust|corrosion|pitted|scratch|dent|crack|chip|hairline|"
+    r"missing|broken|bent|replaced|non-?original|redial|refinish|water damage|"
+    r"needs? (a )?(service|cleaning|repair)|as[- ]is|for parts|does ?n[o']t "
+    r"(advance|set|wind|keep)|mainspring|balance staff|stem)\b")
+
+
+def _match_notes(text: str, pattern, limit: int = 6) -> list:
+    """Sentences from a description matching a keyword pattern."""
+    notes = []
+    for chunk in re.split(r"(?<=[.!?])\s+|\n", text or ""):
+        line = chunk.strip()
+        if 8 <= len(line) <= 240 and pattern.search(line):
+            notes.append(line)
+            if len(notes) >= limit:
+                break
+    return notes
+
+
+def _spec_notes(text: str, limit: int = 6) -> list:
+    """Lines from the description that mention size, thickness or weight."""
+    return _match_notes(text, SPEC_HINT_RE, limit)
+
+
+def _fault_notes(text: str, limit: int = 8) -> list:
+    return _match_notes(text, FAULT_HINT_RE, limit)
+
+
+# "Ref. 6606A-1127-55B", "Reference: 145.022", "ref no. 6239" — capture stops
+# at the first comma/semicolon/newline so trailing prose stays out.
+# The prefix matches any case, but the ref itself must be uppercase/digits —
+# with (?i) everywhere, "no reference here" captured "here". A following
+# lowercase word ends the ref, so "145.022 from 1969" stops at "145.022".
+_REF_RE = re.compile(
+    r"(?i:\bref(?:erence)?\.?\s*(?:number|no\.?|#)?\s*[:.\-]?)\s*"
+    r"([A-Z0-9][A-Z0-9\-/\. ]{1,24}?)(?=\s*[,;)\n]|\s+[a-z]|$)")
+
+# Year with context ("circa 1965", "Ca. 1950s", "manufactured 1972") beats a
+# bare year, which beats nothing — descriptions are full of stray numbers.
+_YEAR_CTX_RE = re.compile(
+    r"(?i)(?:circa|ca\.?|c\.|year|manufactured|made|produced|dates?\s+(?:to|from)|from)"
+    r"\s*[:\-]?\s*((?:19[0-9]{2}|20[0-2][0-9])(?:'?s)?)")
+_YEAR_ANY_RE = re.compile(r"\b((?:19[0-9]{2}|20[0-2][0-9])(?:'?s)?)\b")
+
+
+def _model_ref(aspects: dict, text: str):
+    """(model, reference) from item specifics first, description as fallback."""
+    model = ref = None
+    for name, value in aspects.items():
+        low = (name or "").lower()
+        if model is None and "model" in low and "year" not in low:
+            model = value
+        if ref is None and ("reference" in low or low == "mpn"):
+            ref = value
+    if ref in ("Does not apply", "Does Not Apply", "NA", "N/A"):
+        ref = None
+    if not ref:
+        found = _REF_RE.search(text or "")
+        if found:
+            ref = found.group(1).strip(" .")
+    return model, ref
+
+
+def _year_guess(*texts):
+    """Specific year (or decade) from prose; context-anchored matches first."""
+    for rx in (_YEAR_CTX_RE, _YEAR_ANY_RE):
+        for t in texts:
+            found = rx.search(t or "")
+            if found:
+                return found.group(1)
+    return None
+
+
+# Region ids whose scope covers the US when they appear in regionIncluded.
+_US_COVERING = {"US", "WORLDWIDE", "NORTH_AMERICA", "AMERICAS"}
+
+
+def _ships_to_us(d: dict):
+    """True/False from shipToLocations; None when the listing carries no data.
+
+    An explicit US (or Americas-wide) exclusion wins over any inclusion —
+    'ships worldwide except US' is a common pattern on overseas listings.
+    """
+    ship_to = d.get("shipToLocations") or {}
+    included = {r.get("regionId") for r in ship_to.get("regionIncluded") or []}
+    excluded = {r.get("regionId") for r in ship_to.get("regionExcluded") or []}
+    if not included and not excluded:
+        return None
+    if excluded & _US_COVERING:
+        return False
+    return bool(included & _US_COVERING)
+
+
+def _format_time_left(secs: float) -> str:
+    """Always show two useful units, seconds included once inside the hour.
+
+    This is a snapshot taken at fetch time — it is already stale by the time it
+    reaches a phone. The page re-derives the countdown from `ends` and ticks it
+    live; this exists for API callers, which is why it carries seconds too.
+    """
+    if secs <= 0:
+        return "ended"
+    days, rem = int(secs // 86400), secs % 86400
+    hours, mins, sec = int(rem // 3600), int(rem % 3600 // 60), int(rem % 60)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {mins}m {sec}s"
+    return f"{mins}m {sec}s"
+
+
+def item_summary(d: dict) -> dict:
+    """The handful of fields worth reading on a phone, off the raw response."""
+    options = d.get("buyingOptions") or []
+    is_auction = "AUCTION" in options
+    money = (d.get("currentBidPrice") if is_auction else d.get("price")) \
+        or d.get("price") or {}
+    end = d.get("itemEndDate") or ""
+    time_left = None
+    if end:
+        try:
+            dt = datetime.strptime(end[:19], "%Y-%m-%dT%H:%M:%S") \
+                         .replace(tzinfo=timezone.utc)
+            time_left = _format_time_left(
+                (dt - datetime.now(timezone.utc)).total_seconds())
+        except ValueError:
+            pass
+    seller = d.get("seller") or {}
+    primary = (d.get("image") or {}).get("imageUrl", "")
+    created = d.get("itemCreationDate") or ""
+    listed_days = None
+    if created:
+        try:
+            cdt = datetime.strptime(created[:19], "%Y-%m-%dT%H:%M:%S") \
+                          .replace(tzinfo=timezone.utc)
+            listed_days = int((datetime.now(timezone.utc) - cdt)
+                              .total_seconds() // 86400)
+        except ValueError:
+            pass
+    # Sold vs expired-unsold changes how to read the price entirely: a sold
+    # listing is a comp, an unsold one is a relist candidate you can lowball.
+    avail = (d.get("estimatedAvailabilities") or [{}])[0]
+    ship = (d.get("shippingOptions") or [{}])[0]
+    coupon = (d.get("availableCoupons") or [{}])[0]
+    marketing = d.get("marketingPrice") or {}
+    loc = d.get("itemLocation") or {}
+    aspects = {a.get("name"): a.get("value")
+               for a in (d.get("localizedAspects") or []) if a.get("name")}
+    key_specs, spec_names = _key_specs(aspects)
+    description = _strip_html(d.get("description") or "")
+    short_desc = d.get("shortDescription") or ""
+    cond_desc = _strip_html(d.get("conditionDescription") or "")
+    model, ref = _model_ref(aspects, short_desc + "\n" + description)
+    box = next((v for k, v in aspects.items()
+                if re.search(r"(?i)original\s+box|box/packaging", k or "")), None)
+    papers = next((v for k, v in aspects.items()
+                   if re.search(r"(?i)with\s+papers|papers/coa", k or "")), None)
+    manual = next((v for k, v in aspects.items()
+                   if re.search(r"(?i)manual|booklet", k or "")), None)
+    caseback = next((v for k, v in aspects.items()
+                     if re.match(r"(?i)case\s*back$", (k or "").strip())), None)
+    # Numeric diameter for colour-coding. Sellers write "40 mm" or
+    # "44.70mm X 36mm" (lug-to-lug x diameter) — the smaller plausible
+    # number is the diameter.
+    case_val = next((v for label, v in key_specs if label == "Case size"), None)
+    case_mm = None
+    if case_val:
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", case_val)]
+        nums = [n for n in nums if 16 <= n <= 60]
+        if nums:
+            case_mm = min(nums)
+    lug_val = next((v for label, v in key_specs if label == "Band/lug width"), None)
+    lug_mm = None
+    if lug_val:
+        nums = [float(n) for n in re.findall(r"\d+(?:\.\d+)?", lug_val)]
+        nums = [n for n in nums if 6 <= n <= 30]
+        if nums:
+            lug_mm = nums[0]
+    # Prose year first (the seller's own dating), aspect Year Manufactured as
+    # the fallback — specifics are often left at a placeholder value.
+    year = _year_guess(short_desc, cond_desc, description) \
+        or next((v for k, v in aspects.items()
+                 if "year" in (k or "").lower() and v), None)
+    return {
+        "title": d.get("title"),
+        # getItem hands back the full-size render; ask for the small one so a
+        # phone on cellular pulls ~9 KB instead of ~175 KB.
+        "image": re.sub(r"s-l\d+", "s-l500", primary) if primary else "",
+        "price": money.get("value"),
+        "currency": money.get("currency"),
+        "buying": options,
+        "is_auction": is_auction,
+        "bid_count": d.get("bidCount"),
+        # Bids alone can't tell a two-bidder duel from broad demand.
+        "unique_bidders": d.get("uniqueBidderCount"),
+        # The seller's own one-line summary — usually names the calibre.
+        "short_description": d.get("shortDescription"),
+        "brand": d.get("brand"),
+        "model": model,
+        "reference": ref,
+        "year": year,
+        "box": box,
+        "papers": papers,
+        "manual": manual,
+        "caseback": caseback,
+        "case_mm": case_mm,
+        "lug_mm": lug_mm,
+        "condition": d.get("condition"),
+        # Numeric and locale-stable (7000 = for parts, 3000 = used), unlike
+        # the free-text condition above.
+        "condition_id": d.get("conditionId"),
+        "ends": end,
+        "time_left": time_left,
+        "listed": created,
+        "listed_days": listed_days,
+        "availability": avail.get("estimatedAvailabilityStatus"),
+        "sold_qty": avail.get("estimatedSoldQuantity"),
+        "remaining_qty": avail.get("estimatedRemainingQuantity"),
+        "min_bid": (d.get("minimumPriceToBid") or {}).get("value"),
+        "shipping_cost": (ship.get("shippingCost") or {}).get("value"),
+        "shipping_type": ship.get("shippingCostType"),
+        "coupon": ({"amount": (coupon.get("discountAmount") or {}).get("value"),
+                    "code": coupon.get("redemptionCode")}
+                   if coupon.get("discountAmount") else None),
+        "discount_pct": marketing.get("discountPercentage"),
+        "location": ", ".join(x for x in (loc.get("city"),
+                                          loc.get("stateOrProvince"),
+                                          loc.get("country")) if x),
+        "lot_size": d.get("lotSize") or None,
+        "ships_to_us": _ships_to_us(d),
+        "seller": seller.get("username"),
+        "feedback_pct": seller.get("feedbackPercentage"),
+        "feedback_score": seller.get("feedbackScore"),
+        "returns": (d.get("returnTerms") or {}).get("returnsAccepted"),
+        "photos": (1 if d.get("image") else 0) + len(d.get("additionalImages") or []),
+        "aspects": aspects,
+        # Dimensions first — they decide whether it fits the wrist and whether
+        # a band you own will fit it, before price is worth thinking about.
+        "key_specs": key_specs,
+        "key_spec_names": spec_names,
+        "spec_notes": _spec_notes(description),
+        "fault_notes": _fault_notes(description),
+        # Some sellers write a free-text condition note on top of eBay's
+        # canonical condition name; it's where the real faults get described.
+        "condition_description": cond_desc or None,
+        "description": description[:8000],
+        "description_truncated": len(description) > 8000,
+        "url": d.get("itemWebUrl"),
+        # Same date shape as Listed/Ends (2026-08-06), not 8/6/2026.
+        # Always Mountain time (America/Denver), wherever the server runs.
+        "fetched": (datetime.now(MOUNTAIN) if MOUNTAIN else datetime.now())
+                   .strftime("%Y-%m-%d %I:%M %p").replace(" 0", " ", 1),
+    }
+
+
+def fetch_item(ref: str) -> dict:
+    kind, item_id = parse_item_ref(ref)
+    client = ebay_client()
+    return (client.get_item(item_id) if kind == "browse"
+            else client.get_item_by_legacy_id(item_id))
+
+
+# ---------------------------------------------------------------------------
+# The dashboard. `/` is the board; every tool hangs off it and links back.
+# HUB_PORT is a second service (Watch Hub) on this same Pi, so its links are
+# built client-side from whatever hostname you arrived on — that keeps one
+# home-screen icon working over both Tailscale and the LAN.
+# ---------------------------------------------------------------------------
+
+HUB_PORT = 8090
+
+APPS = [
+    {"id": "scout", "name": "GemHunter", "icon": "&#128142;", "where": "local",
+     "path": "/app", "blurb": "The ranked feed. Streams, saved gems, scoring brain."},
+    {"id": "lookup", "name": "Listing lookup", "icon": "&#128269;", "where": "local",
+     "path": "/item", "blurb": "Paste an eBay listing, get live JSON back."},
+    {"id": "search", "name": "Quick search", "icon": "&#9889;", "where": "hub",
+     "path": "/search", "blurb": "Live eBay search, any query, newest first."},
+    {"id": "lathe", "name": "Lathe outfits", "icon": "&#128296;", "where": "hub",
+     "path": "/search?hunt=LATHE&preset=1&days=30",
+     "blurb": "The standing 8mm lathe sweep, scored."},
+    {"id": "jacot", "name": "Jacot tools", "icon": "&#9881;", "where": "hub",
+     "path": "/search?hunt=JACOT&preset=1&days=30",
+     "blurb": "The standing Jacot / pivot-polisher sweep."},
+]
+
+# Health is a property of the service a tile lives on, not of the tile. Probing
+# per-tile meant tiles with nothing to probe defaulted to green while their
+# service was down. Both probes are cheap and neither costs an eBay call.
+SERVICES = {
+    "local": {"name": "GemHunter", "health": "/api/health"},
+    "hub": {"name": "Watch Hub", "health": "/manifest.json"},
+}
+
+DASHBOARD = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#08111f"><title>GemHunter</title>
+<link rel="manifest" href="/manifest.json">
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:18px 14px 48px;
+ max-width:720px;margin:0 auto}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.eyebrow{font-size:12px;font-weight:750;color:#9fb0c9}
+h1{font-size:40px;line-height:.95;margin:4px 0 0;font-weight:900;letter-spacing:-1.6px;
+ background:linear-gradient(90deg,#f8fafc,#7dd3fc 48%,#facc15);
+ -webkit-background-clip:text;background-clip:text;color:transparent}
+.refresh{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);
+ color:#e9eef6;width:44px;height:44px;border-radius:14px;font-size:20px;font-weight:800;
+ flex:none;display:grid;place-items:center}
+.refresh:disabled{opacity:.5}
+.status{font-size:12px;color:#8ba0bd;margin:14px 0 4px;min-height:17px}
+a.tile{display:flex;gap:13px;align-items:center;text-decoration:none;color:inherit;
+ background:rgba(16,26,45,.96);border:1px solid rgba(148,163,184,.16);
+ border-radius:20px;padding:15px;margin-top:11px}
+a.tile:active{background:rgba(26,40,66,.96)}
+.orb{width:46px;height:46px;border-radius:15px;display:grid;place-items:center;
+ font-size:22px;background:#0b1425;border:1px solid rgba(148,163,184,.18);flex:none}
+.tile h2{margin:0;font-size:17px;font-weight:800}
+.tile p{margin:3px 0 0;color:#8ba0bd;font-size:13px}
+.dot{width:9px;height:9px;border-radius:50%;background:#334765;flex:none}
+.dot.ok{background:#4ade80}.dot.bad{background:#f87171}
+.foot{color:#64758c;font-size:12px;margin-top:22px;line-height:1.6}
+.foot code{color:#8ba0bd;font-size:11px}
+</style></head><body>
+<div class="head">
+  <div><div class="eyebrow">Private watch tools</div><h1>Dashboard</h1></div>
+  <button class="refresh" id="refreshBtn" onclick="refreshAll()"
+          aria-label="Refresh all apps">&#8635;</button>
+</div>
+<div class="status" id="status"></div>
+<div id="tiles"></div>
+<div class="foot">
+  Every tool here is also a plain GET JSON endpoint &mdash;
+  <code>/api/apps</code> lists them.
+</div>
+<script>
+var APPS = __APPS__, SERVICES = __SERVICES__, HUB_PORT = __HUBPORT__;
+var HUB = location.protocol + '//' + location.hostname + ':' + HUB_PORT;
+function base(w){ return w === 'hub' ? HUB : ''; }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
+  function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+function render(){
+  document.getElementById('tiles').innerHTML = APPS.map(function(a){
+    return '<a class="tile" id="tile-' + a.id + '" href="' + base(a.where) + a.path + '">'
+      + '<div class="orb">' + a.icon + '</div>'
+      + '<div style="flex:1"><h2>' + esc(a.name) + '</h2><p>' + esc(a.blurb) + '</p></div>'
+      + '<div class="dot" id="dot-' + a.id + '"></div></a>';
+  }).join('');
+}
+render();
+
+function setDots(where, cls){
+  APPS.filter(function(a){ return a.where === where; }).forEach(function(a){
+    document.getElementById('dot-' + a.id).className = 'dot ' + cls;
+  });
+}
+
+// "Refresh all" re-checks every service, re-reads the feed's timestamp, and
+// cache-busts each tile link so opening an app never lands on a stale page.
+// It cannot force a new eBay sweep — that is the scout service's own timer.
+function refreshAll(){
+  var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
+  btn.disabled = true; st.textContent = 'Refreshing\\u2026';
+  var stamp = Date.now(), notes = [], pending = 0;
+
+  APPS.forEach(function(a){
+    var tile = document.getElementById('tile-' + a.id);
+    tile.href = base(a.where) + a.path
+              + (a.path.indexOf('?') < 0 ? '?' : '&') + 'v=' + stamp;
+  });
+
+  function finish(){
+    if (--pending > 0) return;
+    btn.disabled = false;
+    st.textContent = notes.length ? notes.join('  \\u00b7  ') : 'All services responded.';
+  }
+
+  Object.keys(SERVICES).forEach(function(w){
+    pending++;
+    fetch(base(w) + SERVICES[w].health + '?v=' + stamp, {cache: 'no-store'})
+      .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(d){
+        if (d.ebay_keys === false) {
+          setDots(w, 'bad'); notes.push(SERVICES[w].name + ': eBay keys missing');
+        } else {
+          setDots(w, 'ok');
+        }
+      })
+      .catch(function(e){
+        setDots(w, 'bad'); notes.push(SERVICES[w].name + ' unreachable (' + e.message + ')');
+      })
+      .then(finish);
+  });
+
+  pending++;
+  fetch('/api/listings?stream=repair&v=' + stamp, {cache: 'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){ if (d.updated) notes.push('feed ' + d.updated); })
+    .catch(function(){})
+    .then(finish);
+}
+refreshAll();
+</script></body></html>
+"""
+
+
+def _dashboard() -> bytes:
+    return (DASHBOARD
+            .replace("__APPS__", json.dumps(APPS))
+            .replace("__SERVICES__", json.dumps(SERVICES))
+            .replace("__HUBPORT__", str(HUB_PORT))
+            ).encode("utf-8")
+
+
+ITEM_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#08111f"><title>Listing lookup</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px 14px 48px;max-width:760px;margin:0 auto}
+h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
+.sub{color:#8ba0bd;font-size:13px;margin:0 0 16px}
+input,button{width:100%;font:inherit;color:#e9eef6;background:#0f1c30;
+ border:1px solid #23395c;border-radius:11px;padding:12px 13px;appearance:none}
+/* flex, so the wrapper is exactly the input's height — as a block it picked up
+   the inline baseline gap and anything centred in it sat low. */
+.field{position:relative;display:flex}
+.field input{flex:1;padding-right:52px}
+/* Pinned top and bottom rather than centred: fills the input's full height
+   whatever that height is, and gives a proper thumb-sized target. */
+/* margin:0 matters — the generic `button` rule below carries margin-top:12px,
+   which this never overrode, so the button sat 12px low and 12px short. */
+.clear{display:none;position:absolute;top:0;bottom:0;right:0;width:48px;height:auto;
+ margin:0;padding:0;border:0;border-radius:0 11px 11px 0;background:transparent;
+ color:#8ba0bd;font-size:25px;font-weight:400;line-height:1;place-items:center}
+.clear.on{display:grid}
+.clear:active{background:rgba(148,163,184,.15);color:#e9eef6}
+button{background:#c9a227;color:#0b1220;border:0;font-weight:700;margin-top:12px}
+button:disabled{opacity:.55}
+.card{background:#0f1c30;border:1px solid #1d2f4c;border-radius:14px;padding:14px;margin-top:16px}
+.t{font-size:15px;margin:0 0 10px;line-height:1.35}
+.shot{display:block;width:100%;max-width:260px;margin:0 auto 12px;border-radius:12px;
+ background:#08111f}
+.sd{margin:0 0 10px;padding:9px 11px;background:#0b1526;border-left:3px solid #c9a227;
+ border-radius:0 10px 10px 0;color:#c9d6e8;font-size:13px;line-height:1.4}
+.sd.note{border-left-color:#ff4d3d}
+.callout{margin:0 0 10px;padding:10px 12px;border-radius:11px;background:#122239;
+ border:1px solid #23395c;font-size:18px;font-weight:800;text-align:center}
+.callout small{font-size:11px;font-weight:600;opacity:.6;vertical-align:middle}
+.callout.bad{background:rgba(255,77,61,.12);border-color:#ff4d3d;color:#ff6b5c;font-size:21px}
+.callout.good{background:rgba(74,222,128,.1);border-color:#4ade80;color:#7ee2a8}
+.callout.warn{background:rgba(251,191,36,.1);border-color:#fbbf24;color:#fde68a;font-size:17px}
+.listed{color:#7dd3fc;font-size:17px;font-weight:800}
+.model{font-weight:800;font-size:15px}
+.fb{font-weight:700}
+.fb.good{color:#4ade80;font-size:17px;font-weight:800}
+.fb.bad{color:#ff4d3d;font-size:17px;font-weight:800}
+.fb.gold{color:#f0d67a;font-size:17px;font-weight:800}
+.fb.purple{color:#c084fc;font-size:17px;font-weight:800}
+.notes{margin:0 0 10px;padding:9px 11px;background:#0b1526;border:1px solid #1d2f4c;
+ border-radius:11px;font-size:13px;color:#c9d6e8}
+.notes b{display:block;color:#8ba0bd;font-size:11px;text-transform:uppercase;
+ letter-spacing:.6px;margin-bottom:5px}
+.notes p{margin:0 0 5px}
+.notes.fault{border-color:rgba(255,77,61,.4);background:rgba(255,77,61,.07)}
+.notes.fault b{color:#ff8a7a}
+.desc{white-space:pre-wrap;background:#0b1526;border:1px solid #1d2f4c;border-radius:11px;
+ padding:12px;font-size:13px;line-height:1.5;color:#c9d6e8;max-height:340px;overflow-y:auto}
+.big{font-size:26px;font-weight:700;color:#f0d67a}
+.k{display:flex;justify-content:space-between;gap:12px;padding:7px 0;
+ border-top:1px solid #1d2f4c;font-size:14px}
+.k span:first-child{color:#8ba0bd}
+.k span:last-child{text-align:right}
+.tl{font-variant-numeric:tabular-nums;font-size:19px;font-weight:800;line-height:1.1}
+.tl.soon{color:#ff4d3d}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.tl.soon{animation:pulse 2s ease-in-out infinite}
+.err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
+ border-radius:11px;margin-top:16px;font-size:14px}
+pre{background:#0b1526;border:1px solid #1d2f4c;border-radius:11px;padding:12px;
+ overflow-x:auto;font-size:11px;line-height:1.4;color:#b9cbe4}
+summary{cursor:pointer;color:#8ba0bd;font-size:13px;margin-top:14px}
+</style></head><body>
+<h1><a href="/">&larr;</a> &nbsp;Listing lookup</h1>
+<p class="sub">Live from the eBay Browse API with your developer keys. Paste a
+listing URL, an item number, or a share link from the eBay app.</p>
+<div class="field">
+  <input id="q" placeholder="ebay.io/m/pG5UUs &nbsp;or&nbsp; 127998919225"
+         autocapitalize="none" autocorrect="off" enterkeyhint="go">
+  <button type="button" class="clear" id="clear" onclick="clearField()"
+          aria-label="Clear">&times;</button>
+</div>
+<button id="btn" onclick="go()">Fetch live data</button>
+<div id="out"></div>
+<script>
+var P = new URLSearchParams(location.search);
+if (P.get('id')) { document.getElementById('q').value = P.get('id'); }
+document.getElementById('q').addEventListener('keydown', function(e){
+  if (e.key === 'Enter') go();
+});
+document.getElementById('q').addEventListener('input', toggleClear);
+
+function toggleClear(){
+  document.getElementById('clear')
+          .classList.toggle('on', !!document.getElementById('q').value);
+}
+// Clearing means "I'm looking up something else", so the old card goes too —
+// leaving it would show a frozen listing whose countdown and auto-refresh have
+// already stopped, which reads as live when it isn't.
+function clearField(){
+  var q = document.getElementById('q');
+  q.value = '';
+  toggleClear();
+  if (ticker) { clearInterval(ticker); ticker = null; }
+  if (refresher) { clearTimeout(refresher); refresher = null; }
+  lastFetch = 0; staleMsg = '';
+  document.getElementById('out').innerHTML = '';
+  history.replaceState(null, '', '/item');
+  q.focus();
+}
+toggleClear();
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
+  function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function row(k, v){ return v == null || v === '' ? '' :
+  '<div class="k"><span>' + k + '</span><span>' + esc(v) + '</span></div>'; }
+function noteBlock(label, lines, cls){
+  if (!lines || !lines.length) return '';
+  return '<div class="notes' + cls + '"><b>' + label + '</b>'
+       + lines.map(function(n){ return '<p>' + esc(n) + '</p>'; }).join('') + '</div>';
+}
+// Case diameter, colour-coded to wearability: under 36 red, 36-41 green,
+// over 41 purple. Unparseable sizes stay gold — flagged, not judged.
+function caseAndLug(s){
+  var ks = s.key_specs || [], caseKv = null, lugKv = null, rest = [];
+  ks.forEach(function(kv){
+    if (kv[0] === 'Case size') caseKv = kv;
+    else if (kv[0] === 'Band/lug width') lugKv = kv;
+    else rest.push(kv);
+  });
+  var h = '';
+  if (caseKv) {
+    var cls = 'gold';
+    if (s.case_mm != null)
+      cls = s.case_mm > 41 ? 'purple' : (s.case_mm >= 36 ? 'good' : 'bad');
+    h += '<div class="k"><span>Case diameter</span><span class="fb ' + cls + '">'
+       + esc(caseKv[1])
+       + (s.case_mm != null && /x/i.test(caseKv[1])
+            ? ' <small style="opacity:.65">(' + s.case_mm + 'mm dia)</small>' : '')
+       + '</span></div>';
+  }
+  if (lugKv) {
+    // 18 gold, 19-22 green, over 22 purple; below 18 stays neutral (no band
+    // was specified for it). Unparseable stays neutral too.
+    var lc = '';
+    if (s.lug_mm != null) {
+      if (s.lug_mm === 18) lc = ' gold';
+      else if (s.lug_mm >= 19 && s.lug_mm <= 22) lc = ' good';
+      else if (s.lug_mm > 22) lc = ' purple';
+    }
+    h += '<div class="k"><span>Lug width</span><span class="fb' + lc + '">'
+       + esc(lugKv[1]) + '</span></div>';
+  }
+  return h + rest.map(function(kv){ return row(kv[0], kv[1]); }).join('');
+}
+
+function yesNoRow(label, v){
+  if (!v) return '';
+  var cls = /^yes/i.test(v) ? ' good' : (/^no/i.test(v) ? ' bad' : '');
+  return '<div class="k"><span>' + label + '</span><span class="fb' + cls + '">'
+       + esc(v) + '</span></div>';
+}
+function money(v){
+  var n = Number(v);
+  return isNaN(n) ? String(v)
+       : '$' + n.toLocaleString('en-US', {minimumFractionDigits: 2,
+                                          maximumFractionDigits: 2});
+}
+function isOver(s){ return s.ends ? Date.parse(s.ends) <= Date.now() : false; }
+// Sold vs expired-unsold, from estimatedAvailabilities. "ended" alone hides
+// the only fact that decides how to read the final price: a sold listing is a
+// comp, an unsold one is a relist candidate you can approach with a low offer.
+function outcomeBadge(s){
+  if (!isOver(s)) return '';
+  // sold_qty > 0 is definitive. OUT_OF_STOCK alone only counts when eBay
+  // omitted the quantity — an unsold ending also reads OUT_OF_STOCK, but with
+  // an explicit sold_qty of 0.
+  var sold = Number(s.sold_qty || 0) > 0
+          || (s.sold_qty == null && s.availability === 'OUT_OF_STOCK');
+  return sold
+    ? '<div class="callout good">SOLD \\u2014 price above is a comp</div>'
+    : '<div class="callout warn">ENDED UNSOLD \\u2014 relist / lowball candidate</div>';
+}
+function runLength(listed, ends){
+  var a = listed ? Date.parse(listed) : NaN, b = ends ? Date.parse(ends) : NaN;
+  if (isNaN(a) || isNaN(b) || b <= a) return '';
+  return ' \\u00b7 ' + Math.round((b - a) / 86400000) + 'd run';
+}
+
+// The countdown is re-derived from the listing's own end timestamp and ticked
+// here, so it stays true no matter how long the page has been open. Anything
+// computed on the Pi is stale the moment it's sent.
+var ticker = null, lastFetch = 0, staleMsg = '', lastItem = null;
+
+// navigator.clipboard needs HTTPS; the Pi serves plain http, so fall back to
+// the textarea/execCommand path, which still works there.
+function copyJson(){
+  if (!lastItem) return;
+  var text = JSON.stringify(lastItem, null, 2);
+  var done = function(ok){
+    var b = document.getElementById('copyBtn');
+    if (!b) return;
+    b.textContent = ok ? 'Copied \\u2713' : 'Copy failed \\u2014 long-press the JSON above';
+    setTimeout(function(){ b.textContent = 'Copy raw JSON'; }, 2500);
+  };
+  var legacy = function(){
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.focus(); ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) {}
+    document.body.removeChild(ta);
+    done(ok);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    // If the modern API refuses (permissions, focus), try the old way
+    // before reporting failure.
+    navigator.clipboard.writeText(text).then(function(){ done(true); }, legacy);
+    return;
+  }
+  legacy();
+}
+function ago(ms){
+  var s = Math.floor(ms / 1000);
+  if (s < 5) return 'just now';
+  if (s < 60) return s + 's ago';
+  var m = Math.floor(s / 60);
+  return m < 60 ? m + 'm ago' : Math.floor(m / 60) + 'h ago';
+}
+function fmtLeft(ms){
+  if (ms <= 0) return 'ended';
+  var t = Math.floor(ms / 1000);
+  var d = Math.floor(t / 86400), h = Math.floor(t % 86400 / 3600),
+      m = Math.floor(t % 3600 / 60), s = t % 60;
+  if (d) return d + 'd ' + h + 'h';
+  if (h) return h + 'h ' + m + 'm ' + s + 's';
+  return m + 'm ' + s + 's';
+}
+function startTicker(ends){
+  if (ticker) { clearInterval(ticker); ticker = null; }
+  var el = document.getElementById('tl');
+  var end = ends ? Date.parse(ends) : NaN;
+  if (!el || isNaN(end)) return;
+  var paint = function(){
+    var left = end - Date.now();
+    el.textContent = fmtLeft(left);
+    el.classList.toggle('soon', left > 0 && left < 3600000);
+    // Relative age, not a wall-clock stamp: two refreshes inside the same
+    // minute have to look different, or the display can't be trusted.
+    var f = document.getElementById('fresh');
+    if (f) f.textContent = staleMsg || (lastFetch ? ago(Date.now() - lastFetch) : '');
+    if (left <= 0 && ticker) { clearInterval(ticker); ticker = null; }
+  };
+  paint();
+  ticker = setInterval(paint, 1000);
+}
+
+// The clock ticks on its own, but price and bid count only change when we ask
+// eBay again. Re-fetch on a cadence matched to how fast the listing can move,
+// and never while the tab is hidden — a phone in your pocket shouldn't burn
+// API quota.
+var refresher = null;
+function refreshEvery(left){
+  if (left < 600000) return 20000;      // last 10 min: sniping range
+  if (left < 3600000) return 60000;     // last hour
+  if (left < 86400000) return 300000;   // last day
+  return 900000;
+}
+function scheduleRefresh(ends){
+  if (refresher) { clearTimeout(refresher); refresher = null; }
+  var end = ends ? Date.parse(ends) : NaN;
+  if (isNaN(end)) return;               // fixed-price with no end: nothing to chase
+  var left = end - Date.now();
+  if (left <= 0) return;
+  refresher = setTimeout(function(){
+    if (document.hidden) { scheduleRefresh(ends); return; }
+    go(true);
+  }, refreshEvery(left));
+}
+function stale(msg){
+  staleMsg = msg;
+  var f = document.getElementById('fresh');
+  if (f) f.textContent = msg;
+}
+// Coming back to the tab should show current numbers, not whatever was on
+// screen when you locked the phone.
+document.addEventListener('visibilitychange', function(){
+  if (!document.hidden && document.getElementById('tl')) go(true);
+});
+function go(silent){
+  var q = document.getElementById('q').value.trim();
+  if (!q) return;
+  var btn = document.getElementById('btn'), out = document.getElementById('out');
+  if (!silent) {
+    history.replaceState(null, '', '/item?id=' + encodeURIComponent(q));
+    btn.disabled = true; btn.textContent = 'Fetching\\u2026'; out.innerHTML = '';
+  }
+  fetch('/api/item?id=' + encodeURIComponent(q) + (silent ? '&_=' + Date.now() : ''),
+        {cache: 'no-store'})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.error) {
+        // A background refresh must never wipe a card you're reading — an
+        // ended auction 404s, and that answer belongs next to the last price.
+        if (silent) { stale(d.error); return; }
+        out.innerHTML = '<div class="err">' + esc(d.error) + '</div>';
+        return;
+      }
+      var s = d.summary;
+      // What is it -> what shape is it in -> what will it cost me and how long
+      // have I got -> who am I buying from -> housekeeping.
+      var bids = s.bid_count == null ? null
+               : (s.unique_bidders ? s.bid_count + ' from ' + s.unique_bidders + ' bidders'
+                                   : String(s.bid_count));
+      // For-parts is the single fact that decides whether this is bench work
+      // or a wearer, so it gets size and colour rather than a quiet row.
+      var cid = Number(s.condition_id);
+      var condCls = cid === 7000 ? ' bad' : (cid === 1000 || cid === 1500 ? ' good' : '');
+      // A 100%/720 seller and a 91%/3 seller should not look alike at a glance.
+      var pct = s.feedback_pct == null ? null : Number(s.feedback_pct);
+      var sc = Number(s.feedback_score || 0);
+      var fbCls = pct == null ? ''
+                : (sc < 10 || pct < 97 ? ' bad'
+                : (pct >= 99 && sc >= 100 ? ' good' : ''));
+      var fbText = pct == null ? null
+                 : pct + '% · ' + sc + (sc < 10 ? ' sales — thin history' : ' sales');
+      var h = '<div class="card">'
+        + (s.image ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">'
+                     + '<img class="shot" src="' + esc(s.image) + '" alt=""></a>' : '')
+        + '<p class="t">' + esc(s.title) + '</p>'
+        + (s.short_description ? '<p class="sd">' + esc(s.short_description) + '</p>' : '')
+        + (s.condition ? '<div class="callout' + condCls + '">' + esc(s.condition)
+                         + '</div>' : '')
+        + (s.condition_description
+             ? '<p class="sd note">' + esc(s.condition_description) + '</p>' : '')
+        + caseAndLug(s)
+        + noteBlock('Dimensions in the description', s.spec_notes, '')
+        + noteBlock('What the seller says is wrong', s.fault_notes, ' fault')
+        + row('Brand', s.brand)
+        + ((s.model || s.reference)
+             ? '<div class="k"><span>Model</span><span class="model">'
+               + esc([s.model, s.reference ? 'Ref. ' + s.reference : null]
+                     .filter(Boolean).join(' \\u2014 '))
+               + '</span></div>' : '')
+        + (s.year ? row('Year', s.year) : '')
+        + '<div class="big">' + (s.price ? money(s.price) : 'n/a')
+        + (s.is_auction ? ' <span style="font-size:13px;color:#8ba0bd">current bid</span>' : '')
+        + '</div>'
+        + outcomeBadge(s)
+        + (s.ships_to_us === false
+             ? '<div class="callout bad">DOES NOT SHIP TO THE US</div>' : '')
+        + (s.ends ? '<div class="k"><span>Time left</span>'
+                    + '<span id="tl" class="tl">' + esc(s.time_left || '') + '</span></div>'
+                  : row('Time left', s.time_left))
+        + row('Bids', bids)
+        + (s.is_auction && s.min_bid && !isOver(s) ? row('Next bid', money(s.min_bid)) : '')
+        + (s.listed
+             ? '<div class="k"><span>Listed</span><span class="listed">'
+               + esc(s.listed.slice(0,10))
+               + (s.listed_days != null ? ' \\u00b7 ' + s.listed_days + 'd ago' : '')
+               + '</span></div>'
+             : '')
+        + ((s.remaining_qty != null && (s.remaining_qty > 1 || (s.sold_qty || 0) > 1))
+             ? row('Quantity', (s.sold_qty || 0) + ' sold \\u00b7 '
+                               + s.remaining_qty + ' left') : '')
+        + (s.shipping_cost != null
+             ? row('Shipping', (Number(s.shipping_cost) === 0 ? 'free'
+                                : money(s.shipping_cost))
+                   + (s.shipping_type === 'CALCULATED' ? ' (calculated)' : '')) : '')
+        + (s.coupon ? '<div class="k"><span>Coupon</span><span class="fb good">'
+                      + money(s.coupon.amount) + ' off'
+                      + (s.coupon.code ? ' \\u00b7 ' + esc(s.coupon.code) : '')
+                      + '</span></div>' : '')
+        + (s.discount_pct ? row('Marked down', s.discount_pct + '%') : '')
+        + row('Location', s.location)
+        + (s.lot_size ? row('Lot size', s.lot_size) : '')
+        + row('Seller', s.seller)
+        + (fbText ? '<div class="k"><span>Feedback</span>'
+                    + '<span class="fb' + fbCls + '">' + esc(fbText) + '</span></div>' : '')
+        + row('Returns', s.returns === null ? null : (s.returns ? 'yes' : 'no'))
+        + row('Photos', s.photos)
+        + row('Ends', s.ends
+                ? s.ends.slice(0,10) + runLength(s.listed, s.ends)
+                : null)
+        + '<div class="k"><span>Last Updated</span><span id="fresh">'
+        + esc(s.fetched || '') + '</span></div>'
+        + yesNoRow('Original box', s.box)
+        + yesNoRow('Manual/booklet', s.manual)
+        + yesNoRow('Papers', s.papers)
+        + (s.caseback ? '<div class="k"><span>Caseback</span>'
+                        + '<span class="fb gold">' + esc(s.caseback)
+                        + '</span></div>' : '');
+      // Everything else, minus whatever was already promoted above.
+      var used = s.key_spec_names || [];
+      Object.keys(s.aspects || {}).forEach(function(k){
+        if (used.indexOf(k) >= 0) return;
+        if (s.brand && /^brand$/i.test(k)) return;
+        if (s.model && /^model$/i.test(k)) return;
+        if (s.reference && /reference/i.test(k)) return;
+        if (s.year && /^year/i.test(k)) return;
+        if (s.box && /original\s+box|box\/packaging/i.test(k)) return;
+        if (s.papers && /with\s+papers|papers\/coa/i.test(k)) return;
+        if (s.manual && /manual|booklet/i.test(k)) return;
+        if (s.caseback && /^case\s*back$/i.test(k.trim())) return;
+        h += row(k, s.aspects[k]);
+      });
+      h += '<div class="k"><span></span><span><a target="_blank" rel="noopener" href="'
+         + esc(s.url) + '">open on eBay</a></span></div></div>'
+         + (s.description
+              ? '<details open><summary>Full description</summary><div class="desc">'
+                + esc(s.description)
+                + (s.description_truncated ? '\\n\\n[truncated \\u2014 see raw JSON]' : '')
+                + '</div></details>'
+              : '')
+         + '<details><summary>Raw JSON from eBay</summary><pre>'
+         + esc(JSON.stringify(d.item, null, 2)) + '</pre></details>'
+         + '<button type="button" class="go" id="copyBtn" onclick="copyJson()">'
+         + 'Copy raw JSON</button>';
+      lastItem = d.item;
+      out.innerHTML = h;
+      lastFetch = Date.now(); staleMsg = '';
+      startTicker(s.ends);
+      scheduleRefresh(s.ends);
+    })
+    .catch(function(e){
+      if (silent) { stale('refresh failed'); return; }
+      out.innerHTML = '<div class="err">' + esc(e) + '</div>';
+    })
+    .then(function(){
+      if (!silent) { btn.disabled = false; btn.textContent = 'Fetch live data'; }
+    });
+}
+if (P.get('id')) go();
+</script></body></html>
+"""
+
+
 def _html() -> bytes:
     return (
         HTML
@@ -658,8 +1669,28 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
-        if parsed.path in ("/", "/index.html", "/gems.html"):
+        if parsed.path in ("/", "/index.html"):
+            self._send(HTTPStatus.OK, _dashboard(), "text/html; charset=utf-8")
+            return
+        # /gems.html kept so old phone bookmarks land on the scout, not a 404.
+        if parsed.path in ("/app", "/gems.html"):
             self._send(HTTPStatus.OK, _html(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/apps":
+            self._json(HTTPStatus.OK, {"hub_port": HUB_PORT, "apps": APPS,
+                                       "services": SERVICES})
+            return
+        if parsed.path == "/api/health":
+            try:
+                keys = load_config().has_ebay_keys
+            except Exception:
+                keys = False
+            self._json(HTTPStatus.OK, {
+                "ok": True,
+                "ebay_keys": keys,
+                "db": self.db_path,
+                "updated": _now_str(),
+            })
             return
         if parsed.path == "/api/inspect":
             storage = Storage(self.db_path)
@@ -695,6 +1726,38 @@ class Handler(BaseHTTPRequestHandler):
                 "saved_count": saved_count,
                 "items": _apply_learning(rows, likes, dislikes),
             })
+            return
+        if parsed.path == "/item":
+            self._send(HTTPStatus.OK, ITEM_PAGE.encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/item":
+            params = parse_qs(parsed.query)
+            ref = (params.get("id", [""])[0] or params.get("url", [""])[0])
+            try:
+                item = fetch_item(ref)
+            except ValueError as exc:
+                self._json(HTTPStatus.BAD_REQUEST, {"error": str(exc)})
+                return
+            except RuntimeError as exc:
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+                return
+            except requests.HTTPError as exc:
+                code = exc.response.status_code if exc.response is not None else 0
+                self._json(HTTPStatus.BAD_GATEWAY, {"error": (
+                    "eBay has no live record of that listing — ended listings "
+                    "drop out of the Browse API" if code == 404
+                    else f"eBay returned HTTP {code}")})
+                return
+            except requests.RequestException as exc:
+                self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+                return
+            # raw=1 hands back eBay's response untouched, nothing of ours added.
+            if params.get("raw", [""])[0] in ("1", "true", "yes"):
+                self._json(HTTPStatus.OK, item)
+            else:
+                self._json(HTTPStatus.OK, {"summary": item_summary(item),
+                                           "item": item})
             return
         if parsed.path == "/manifest.json":
             self._json(HTTPStatus.OK, {

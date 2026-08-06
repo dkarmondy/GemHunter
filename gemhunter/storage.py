@@ -36,6 +36,26 @@ def listing_fingerprint(listing) -> str:
         base = f"{seller}|{getattr(listing, 'title', '')}".lower()
     return hashlib.sha1(base.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
+
+# https://i.ebayimg.com/images/g/yZYAAeSwZlJqami8/s-l1600.jpg
+#                                 ^^^^^^^^^^^^^^^^ content id, stable per photo
+# The size token (s-l225 / s-l1600) varies with the render requested, so only
+# the id is captured. Thumbnail URLs carry a /thumbs/ prefix and the same id.
+IMAGE_ID_RE = re.compile(r"/images/g/([A-Za-z0-9~_-]{8,})/")
+
+
+def image_fingerprint(listing) -> str:
+    """Relist key from the primary photo — survives a retitle.
+
+    A seller who relists the same watch almost always re-uses the same photo,
+    and eBay keeps that photo's content id. The title key misses those the
+    moment the wording changes; this one doesn't. Empty when there's no usable
+    image URL, and empty never matches anything.
+    """
+    url = (getattr(listing, "image_url", "") or "").strip()
+    found = IMAGE_ID_RE.search(url)
+    return found.group(1) if found else ""
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS listings (
     item_id          TEXT PRIMARY KEY,
@@ -150,6 +170,7 @@ class Storage:
             ("action_note", "TEXT"),
             ("feedback_reason", "TEXT"),
             ("fingerprint", "TEXT"),
+            ("image_fingerprint", "TEXT"),
             ("country", "TEXT"),
             ("shipping_cost", "REAL DEFAULT 0"),
             ("shipping_known", "INTEGER DEFAULT 0"),
@@ -201,6 +222,22 @@ class Storage:
                 "UPDATE listings SET fingerprint = ? WHERE item_id = ?",
                 (listing_fingerprint(listing), row["item_id"]),
             )
+        # Image keys derive purely from image_url, which history already holds —
+        # so every past listing gets one without a single extra eBay call.
+        rows = self._conn.execute(
+            """SELECT item_id, image_url
+               FROM listings
+               WHERE (image_fingerprint IS NULL OR image_fingerprint = '')
+                 AND image_url IS NOT NULL AND image_url != ''"""
+        ).fetchall()
+        for row in rows:
+            listing = type("ImageFingerprintListing", (), {
+                "image_url": row["image_url"] or "",
+            })()
+            self._conn.execute(
+                "UPDATE listings SET image_fingerprint = ? WHERE item_id = ?",
+                (image_fingerprint(listing), row["item_id"]),
+            )
 
     def is_new(self, item_id: str) -> bool:
         cur = self._conn.execute(
@@ -219,9 +256,10 @@ class Storage:
                 condition, country, url, image_url,
                 active, item_end_date, inactive_reason,
                 score, opportunity, confidence, stream, mode, reasons, risk_tags,
-                action_note, rejected, reject_reason, fingerprint, hidden, saved,
+                action_note, rejected, reject_reason, fingerprint, image_fingerprint,
+                hidden, saved,
                 feedback_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
@@ -237,7 +275,7 @@ class Storage:
              result.stream, result.mode, ", ".join(result.reasons),
              ", ".join(getattr(result, "risk_tags", [])), getattr(result, "action_note", ""),
              int(result.rejected), result.reject_reason,
-             listing_fingerprint(l),
+             listing_fingerprint(l), image_fingerprint(l),
              l.item_id, l.item_id, l.item_id, l.item_id, now, now),
         )
         self.record_observation(l, result)
@@ -370,9 +408,14 @@ class Storage:
         row["relist_group_summary"] = ""
         row["relist_group_item_ids"] = row.get("item_id") or ""
         row["is_group_representative"] = 0
-        fp = row.get("fingerprint")
-        if not fp:
+        fp = row.get("fingerprint") or ""
+        img_fp = row.get("image_fingerprint") or ""
+        row["relist_photo_matches"] = 0
+        if not fp and not img_fp:
             return row
+        # A relist counts if EITHER key matches: the seller+title key, or the
+        # primary photo's content id. Empty keys are excluded so blank-vs-blank
+        # never groups unrelated rows together.
         summary = self._conn.execute(
             """SELECT COUNT(DISTINCT item_id) AS n,
                       MIN(CASE WHEN price > 0 THEN price END) AS min_price,
@@ -381,8 +424,10 @@ class Storage:
                       MAX(last_seen) AS latest_seen,
                       GROUP_CONCAT(item_id) AS item_ids
                FROM listings
-               WHERE active = 1 AND rejected = 0 AND hidden = 0 AND fingerprint = ?""",
-            (fp,),
+               WHERE active = 1 AND rejected = 0 AND hidden = 0
+                 AND ((? != '' AND fingerprint = ?)
+                   OR (? != '' AND image_fingerprint = ?))""",
+            (fp, fp, img_fp, img_fp),
         ).fetchone()
         n = int(summary["n"] or 1)
         row["relist_count"] = n
@@ -393,8 +438,22 @@ class Storage:
         row["relist_group_item_ids"] = summary["item_ids"] or row.get("item_id") or ""
         row["is_group_representative"] = 1 if n > 1 else 0
         if n > 1:
+            if img_fp:
+                photo_n = self._conn.execute(
+                    """SELECT COUNT(DISTINCT item_id) FROM listings
+                       WHERE active = 1 AND rejected = 0 AND hidden = 0
+                         AND image_fingerprint = ?""",
+                    (img_fp,),
+                ).fetchone()[0]
+                row["relist_photo_matches"] = int(photo_n or 0)
+            # Say which evidence fired: an identical photo is much stronger than
+            # a title that merely tokenises the same, and a photo shared across
+            # sellers is worth a second look rather than a shrug.
+            basis = ("same photo" if row["relist_photo_matches"] > 1
+                     else "similar title")
             row["relist_group_summary"] = (
-                f"{n} similar listings · cheapest ${row['relist_min_price']:,.0f} · "
+                f"{n} similar listings ({basis}) · "
+                f"cheapest ${row['relist_min_price']:,.0f} · "
                 f"best confidence {row['relist_best_confidence']:.0f}"
             )
         return row
@@ -420,8 +479,19 @@ class Storage:
              "stream IN ('rolex','patek','iwc','taste') AND confidence >= 70",
              "opportunity DESC, confidence DESC"),
             ("chrono", "Chronos worth inspecting", "stream = 'chrono'", "opportunity DESC, score DESC"),
+            # Two independent relist keys: seller+title, and the primary photo's
+            # eBay content id. The title key misses a retitled relist; the image
+            # key catches it. Either one repeating across item_ids counts.
             ("relist", "Possible relists",
-             "fingerprint IS NOT NULL AND fingerprint IN (SELECT fingerprint FROM listings WHERE fingerprint IS NOT NULL GROUP BY fingerprint HAVING COUNT(DISTINCT item_id) > 1)",
+             """((fingerprint IS NOT NULL AND fingerprint != '' AND fingerprint IN
+                    (SELECT fingerprint FROM listings
+                     WHERE fingerprint IS NOT NULL AND fingerprint != ''
+                     GROUP BY fingerprint HAVING COUNT(DISTINCT item_id) > 1))
+                OR (image_fingerprint IS NOT NULL AND image_fingerprint != ''
+                    AND image_fingerprint IN
+                    (SELECT image_fingerprint FROM listings
+                     WHERE image_fingerprint IS NOT NULL AND image_fingerprint != ''
+                     GROUP BY image_fingerprint HAVING COUNT(DISTINCT item_id) > 1)))""",
              "last_seen DESC"),
         ]
         out = []

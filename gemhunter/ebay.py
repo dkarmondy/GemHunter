@@ -103,6 +103,21 @@ class EbayClient:
         resp.raise_for_status()
         return resp.json()
 
+    def get_item_by_legacy_id(self, legacy_id: str) -> dict:
+        """Look up by the plain numeric id that appears in an ebay.com/itm/ URL.
+
+        Browse's own item ids look like `v1|123456789|0`; the number a human
+        can copy off a listing page is the *legacy* id and needs this endpoint.
+        """
+        resp = requests.get(
+            ITEM_URL + "get_item_by_legacy_id",
+            headers=self._headers(),
+            params={"legacy_item_id": legacy_id},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
     def enrich(self, listing: Listing) -> Listing:
         """Pull item specifics (size, movement, box/papers, …) for a candidate."""
         try:
