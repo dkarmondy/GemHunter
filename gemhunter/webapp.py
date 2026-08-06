@@ -1714,7 +1714,8 @@ RARITIES_PAGE = """<!doctype html><html><head><meta charset="utf-8">
 <style>
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
- BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px 14px 48px;max-width:560px;margin:0 auto}
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:560px;margin:0 auto;
+ padding:16px 14px calc(84px + env(safe-area-inset-bottom,0px))}
 h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
 .sub{color:#8ba0bd;font-size:13px;margin:0 0 6px}
@@ -1780,6 +1781,20 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .more{width:100%;font:inherit;font-weight:700;color:#e9eef6;background:#0f1c30;
  border:1px solid #23395c;border-radius:12px;padding:13px;margin-top:16px}
 .more:disabled{opacity:.55}
+/* Fixed, because this list runs to a few hundred cards and the header scrolls
+   away immediately. Bottom-left keeps it under the thumb and clear of the
+   per-card buttons on the right. */
+.fab{position:fixed;left:12px;z-index:50;display:flex;gap:9px;
+ bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+.fab a,.fab button{width:48px;height:48px;border-radius:50%;padding:0;
+ display:grid;place-items:center;font-size:21px;font-weight:800;
+ color:#e9eef6;text-decoration:none;background:rgba(15,28,48,.92);
+ border:1px solid #23395c;box-shadow:0 8px 22px rgba(0,0,0,.45);
+ backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px)}
+.fab a:active,.fab button:active{background:rgba(30,48,78,.95)}
+/* Only worth showing once there is something to scroll back up through. */
+#topBtn{display:none}
+#topBtn.on{display:grid}
 </style></head><body>
 <div class="head">
   <div>
@@ -1794,6 +1809,11 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 <div class="status" id="status"></div>
 <div id="out"></div>
 <div id="foot"></div>
+<div class="fab">
+  <a href="/" aria-label="Back to dashboard" title="Dashboard">&larr;</a>
+  <button type="button" id="topBtn" onclick="toTop()"
+          aria-label="Back to top" title="Back to top">&uarr;</button>
+</div>
 <script>
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
   function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
@@ -1830,6 +1850,24 @@ function flagHtml(flags){
     return '<span class="fl ' + esc(f.sev) + '">' + esc(f.label) + '</span>';
   }).join('');
 }
+function toTop(){
+  var from = window.scrollY;
+  window.scrollTo({top: 0, behavior: 'smooth'});
+  // Some engines accept the smooth request and never animate. If nothing has
+  // moved shortly after, jump — checking for *no* movement means a real
+  // animation in progress is left alone rather than cut short.
+  setTimeout(function(){
+    if (from > 0 && window.scrollY === from) window.scrollTo(0, 0);
+  }, 250);
+}
+// Also called after each render, not only on scroll: reopening the app can
+// restore a scroll position, and the button has to match where you actually
+// are rather than where the last scroll event left it.
+function paintTop(){
+  var b = document.getElementById('topBtn');
+  if (b) b.classList.toggle('on', window.scrollY > 700);
+}
+window.addEventListener('scroll', paintTop, {passive: true});
 // Hearting is optimistic: the icon fills immediately, because waiting on the
 // Pi round-trip makes a tap feel broken. If the write fails it reverts.
 function toggleHeart(i){
@@ -1966,6 +2004,7 @@ function render(items){
   paintClocks();
   ticker = setInterval(paintClocks, 30000);
   paintFoot();
+  paintTop();
 }
 function paintFoot(){
   var foot = document.getElementById('foot');
