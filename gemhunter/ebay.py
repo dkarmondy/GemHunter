@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 import requests
 
+from . import authguard
 from .config import Search
 from .models import Listing
 
@@ -160,9 +161,16 @@ class EbayClient:
         if import_known:
             listing.import_charges = import_charges
             listing.import_charges_known = True
-        progs = d.get("qualifiedPrograms", []) or []
-        listing.auth_guarantee = bool(d.get("authenticityGuarantee")) or \
-            ("AUTHENTICITY_GUARANTEE" in progs)
+        # qualifiedPrograms is the authority on Authenticity Guarantee — not a
+        # price threshold, which moves by category and eBay has changed before.
+        verdict = authguard.classify(d)
+        listing.auth_guarantee = verdict["has_authenticity_guarantee"]
+        listing.condition_id = verdict["condition_id"]
+        listing.description_indicates_as_is = verdict["description_indicates_as_is"]
+        listing.auth_arbitrage_class = verdict["auth_arbitrage_class"]
+        listing.as_is_terms = verdict["as_is_terms"]
+        if verdict["condition"]:
+            listing.condition = verdict["condition"]
         listing.active, listing.item_end_date, listing.inactive_reason = self._availability(d)
         return listing
 
@@ -234,6 +242,11 @@ class EbayClient:
             loc = item.get("itemLocation", {}) or {}
             shipping_cost, shipping_known, import_charges, import_known = EbayClient._shipping_amounts(item)
             active, item_end_date, inactive_reason = EbayClient._availability(item)
+            # Search hands back qualifiedPrograms and conditionId on every
+            # summary, so whether eBay authenticates this watch is known now,
+            # for nothing. The description is not in a search response, so the
+            # arbitrage read stays AG_UNKNOWN until enrich() reads the prose.
+            verdict = authguard.classify(item)
             listings.append(
                 Listing(
                     item_id=item.get("itemId", ""),
@@ -259,6 +272,10 @@ class EbayClient:
                     country=(loc.get("country") or "").upper(),
                     image_url=(item.get("image", {}) or {}).get("imageUrl", ""),
                     bid_count=int(item.get("bidCount") or 0),
+                    condition_id=verdict["condition_id"],
+                    auth_guarantee=verdict["has_authenticity_guarantee"],
+                    description_indicates_as_is=verdict["description_indicates_as_is"],
+                    auth_arbitrage_class=verdict["auth_arbitrage_class"],
                 )
             )
         return listings

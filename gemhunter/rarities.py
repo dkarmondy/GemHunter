@@ -18,6 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
+from . import authguard
 from .config import load_config
 from .ebay import EbayClient
 from .knowledge import (CHRONO_KEYWORDS, COLLECTOR_TARGETS, IWC_TARGETS,
@@ -388,6 +389,15 @@ def item_dict(listing: Listing) -> dict:
         "mm": case_mm(" " + (listing.title or "").lower() + " "),
         "taste": taste(listing.title),
         "flags": None,          # filled in by the detail pass, if it has run
+        # Whether eBay authenticates this lot is already in the search hit, so
+        # it is known for the whole consignment from the first paint. The
+        # detail pass only sharpens AG_UNKNOWN into arbitrage-or-clean once it
+        # has read the seller's prose.
+        "has_authenticity_guarantee": listing.auth_guarantee,
+        "auth_arbitrage_class": listing.auth_arbitrage_class or None,
+        "description_indicates_as_is": listing.description_indicates_as_is,
+        "condition_id": listing.condition_id,
+        "as_is_excerpt": "",
     }
 
 
@@ -403,27 +413,38 @@ def fetch(client: EbayClient) -> list[dict]:
 # life of the process: a week of browsing costs one call per lot, not one per
 # page view. Only the top slice is ever fetched — nobody reads to lot 180.
 _details_lock = threading.Lock()
-_details: dict[str, list] = {}
+_details: dict[str, dict] = {}
 _details_running = False
 
+# Which of the detail fields ride from the cached payload onto the card.
+_AUTH_FIELDS = ("auth_arbitrage_class", "has_authenticity_guarantee",
+                "description_indicates_as_is", "as_is_excerpt", "condition_id")
 
-def _load_detail(client: EbayClient, item_id: str) -> list:
+
+def _load_detail(client: EbayClient, item_id: str) -> dict:
+    """One getItem, read twice: the fault chips and the AG-arbitrage verdict."""
     try:
         d = client.get_item(item_id)
     except Exception:
-        return []
-    return condition_flags(d.get("conditionDescription") or "")
+        return {"flags": [], "auth": None}
+    return {"flags": condition_flags(d.get("conditionDescription") or ""),
+            "auth": authguard.classify(d)}
 
 
 def apply_details(items: list[dict]) -> int:
-    """Attach known flags; return how many of these are still unfetched."""
+    """Attach what has been fetched; return how many are still outstanding."""
     with _details_lock:
         pending = 0
         for item in items:
-            if item["id"] in _details:
-                item["flags"] = _details[item["id"]]
-            else:
+            got = _details.get(item["id"])
+            if got is None:
                 pending += 1
+                continue
+            item["flags"] = got["flags"]
+            auth = got["auth"]
+            if auth:
+                for field_name in _AUTH_FIELDS:
+                    item[field_name] = auth[field_name]
         return pending
 
 
@@ -450,6 +471,9 @@ def start_detail_pass(client: EbayClient, items: list[dict], top: int = 60,
                 done = list(pool.map(lambda i: (i, _load_detail(client, i)), todo))
             with _details_lock:
                 _details.update(dict(done))
+            authguard.log_counts(
+                f"rarities · {len(done)} lots read",
+                [d["auth"]["auth_arbitrage_class"] for _, d in done if d["auth"]])
         finally:
             with _details_lock:
                 _details_running = False

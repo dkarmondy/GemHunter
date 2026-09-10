@@ -6,7 +6,7 @@ import argparse
 import sys
 import time
 
-from . import report, visual
+from . import authguard, report, visual
 from .config import Config, load_config
 from .ebay import EbayClient, SampleEbayClient
 from .notify import Notifier
@@ -44,6 +44,9 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
                 seen_item_ids.add(listing.item_id)
             if not storage.is_new(listing.item_id):
                 storage.record_observation(listing)
+                # Cheap and free with the search hit: keeps the AG answer on
+                # older rows current instead of frozen at first sighting.
+                storage.refresh_auth(listing)
                 continue                              # dedupe: never re-alert
             seen_new += 1
             result = score_listing(listing)
@@ -58,8 +61,13 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     # Optional: enrich top candidates with item specifics (size/movement/…) and re-score.
     if cfg.enrich and keep:
         keep.sort(key=lambda r: r.score, reverse=True)
-        for r in keep[: cfg.alert_limit]:
+        enriched = keep[: cfg.alert_limit]
+        for r in enriched:
             ebay.enrich(r.listing)
+        # Only enriched listings have been through getItem, so only they carry
+        # an AG verdict — the tally is over those, not the whole cycle.
+        authguard.log_counts(f"scout · {len(enriched)} enriched",
+                             [r.listing.auth_arbitrage_class for r in enriched])
         keep = [score_listing(r.listing) for r in keep]
         keep = [r for r in keep if not r.rejected and r.score >= cfg.min_score]
 
@@ -85,8 +93,11 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     for r in alerted:
         notifier.send_scored(r)
 
+    arbitrage = sum(1 for r in keep
+                    if r.listing.auth_arbitrage_class == authguard.AG_ARBITRAGE)
     print(f"[cycle] {seen_new} new · {rejected} filtered · "
-          f"{len(keep)} gems ({len(alerted)} alerted)")
+          f"{len(keep)} gems ({len(alerted)} alerted)"
+          + (f" · {arbitrage} AG arbitrage" if arbitrage else ""))
     return len(keep)
 
 

@@ -56,6 +56,12 @@ def image_fingerprint(listing) -> str:
     found = IMAGE_ID_RE.search(url)
     return found.group(1) if found else ""
 
+
+def _tri_state(value) -> int | None:
+    """True/False to 1/0, but keep None as NULL — unknown is its own answer."""
+    return None if value is None else int(bool(value))
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS listings (
     item_id          TEXT PRIMARY KEY,
@@ -76,6 +82,16 @@ CREATE TABLE IF NOT EXISTS listings (
     seller_pct       REAL,
     seller_score     INTEGER,
     condition        TEXT,
+    -- eBay's numeric condition: 7000 (for parts) is barred from Authenticity
+    -- Guarantee, 3000 (pre-owned) is not, whatever the description admits to.
+    condition_id     INTEGER,
+    -- NULL, not 0, for a listing nobody has checked yet: "no Authenticity
+    -- Guarantee" and "never looked" must not render as the same chip.
+    has_authenticity_guarantee INTEGER,
+    -- NULL means the description could not be read, which is not the same as
+    -- nothing being wrong — see authguard.description_text.
+    description_indicates_as_is INTEGER,
+    auth_arbitrage_class TEXT,
     country          TEXT,
     url              TEXT,
     image_url        TEXT,
@@ -195,6 +211,10 @@ class Storage:
             ("active", "INTEGER DEFAULT 1"),
             ("item_end_date", "TEXT"),
             ("inactive_reason", "TEXT"),
+            ("condition_id", "INTEGER"),
+            ("has_authenticity_guarantee", "INTEGER"),
+            ("description_indicates_as_is", "INTEGER"),
+            ("auth_arbitrage_class", "TEXT"),
         ]:
             try:
                 self._conn.execute(f"ALTER TABLE listings ADD COLUMN {col} {decl}")
@@ -278,13 +298,15 @@ class Storage:
                (item_id, search_name, title, price, currency, buying_option, bid_count,
                 shipping_cost, shipping_known, import_charges, import_charges_known,
                 seller_username, seller_pct, seller_score,
-                condition, country, url, image_url,
+                condition, condition_id, has_authenticity_guarantee,
+                description_indicates_as_is, auth_arbitrage_class,
+                country, url, image_url,
                 active, item_end_date, inactive_reason,
                 score, opportunity, confidence, stream, mode, reasons, risk_tags,
                 action_note, rejected, reject_reason, fingerprint, image_fingerprint,
                 hidden, saved,
                 feedback_reason, first_seen, last_seen)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
                    COALESCE((SELECT hidden FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT saved FROM listings WHERE item_id = ?), 0),
                    COALESCE((SELECT feedback_reason FROM listings WHERE item_id = ?), ''),
@@ -293,7 +315,11 @@ class Storage:
              l.bid_count, getattr(l, "shipping_cost", 0.0), int(getattr(l, "shipping_known", False)),
              getattr(l, "import_charges", 0.0), int(getattr(l, "import_charges_known", False)),
              l.seller_username, l.seller_feedback_pct, l.seller_feedback_score,
-             l.condition, l.country, l.url, l.image_url,
+             l.condition, getattr(l, "condition_id", None),
+             _tri_state(getattr(l, "auth_guarantee", None)),
+             _tri_state(getattr(l, "description_indicates_as_is", None)),
+             getattr(l, "auth_arbitrage_class", "") or "",
+             l.country, l.url, l.image_url,
              int(getattr(l, "active", True)), getattr(l, "item_end_date", ""),
              getattr(l, "inactive_reason", ""), result.score,
              getattr(result, "opportunity", 0.0), getattr(result, "confidence", 0.0),
@@ -350,6 +376,21 @@ class Storage:
              getattr(listing, "country", ""), now, listing.item_id),
         )
         self._conn.commit()
+
+    def refresh_auth(self, listing) -> None:
+        """Update the Authenticity Guarantee facts on a listing already stored.
+
+        Every search response carries them, but a listing we have seen before
+        only gets an observation row — so without this the AG answer on an old
+        row would stay whatever it was when the row was first written, and
+        rows predating the column would read as "no AG" forever.
+        """
+        self._conn.execute(
+            """UPDATE listings SET condition_id = ?, has_authenticity_guarantee = ?
+               WHERE item_id = ?""",
+            (getattr(listing, "condition_id", None),
+             _tri_state(getattr(listing, "auth_guarantee", None)),
+             listing.item_id))
 
     def mark_unseen_inactive(self, seen_item_ids: set[str]) -> int:
         """After a successful scan, mark listings not returned by active searches as no longer active."""
@@ -656,6 +697,19 @@ class Storage:
                       SUM(CASE WHEN rejected=0 THEN 1 ELSE 0 END) AS gems
                FROM listings""").fetchone()
         return dict(row)
+
+    def auth_arbitrage_counts(self, active_only: bool = True) -> dict:
+        """How many enriched listings landed in each AG bucket.
+
+        Only listings that have been through getItem carry a class at all, so
+        an empty tally means the enrichment pass has not run, not that the
+        arbitrage case never happens.
+        """
+        where = " WHERE active = 1" if active_only else ""
+        cur = self._conn.execute(
+            f"""SELECT auth_arbitrage_class AS klass, COUNT(*) AS n FROM listings
+                {where} GROUP BY auth_arbitrage_class""")
+        return {r["klass"]: r["n"] for r in cur.fetchall() if r["klass"]}
 
     def close(self) -> None:
         self._conn.close()

@@ -19,6 +19,8 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
+from . import authguard
+from .authguard import strip_html as _strip_html
 from .config import load_config
 from .ebay import EbayClient
 from .rarities import SELLER as RARITIES_SELLER
@@ -205,6 +207,11 @@ HTML = r"""<!doctype html>
     .fact{border:1px solid rgba(148,163,184,.14);background:rgba(226,237,247,.06);color:#c8d4e6;border-radius:999px;padding:3px 6px;font-size:10px;font-weight:850;line-height:1}
     .fact.warn{border-color:rgba(251,191,36,.3);background:rgba(251,191,36,.1);color:#fde68a}
     .fact.good{border-color:rgba(52,211,153,.25);background:rgba(52,211,153,.1);color:#bbf7d0}
+    /* A definite "no" and an honest "not checked" — stated, but quietly. */
+    .fact.off{border-color:rgba(148,163,184,.12);color:#8ba0bd}
+    /* Authenticity Guarantee on a watch the seller's own description calls
+       broken: same risk as a for-parts lot, but authenticated on the way. */
+    .fact.arb{border-color:#f0d67a;background:rgba(240,214,122,.16);color:#ffe9a3}
     .groupNote{border:1px solid rgba(148,163,184,.16);background:rgba(226,237,247,.06);color:#dbe7f5;border-radius:12px;padding:7px 8px;font-size:11px;font-weight:800;margin:6px 0}
     .actionNote{color:#c8d4e6;font-size:12px;line-height:1.25;margin:6px 0 3px}
     .seller{color:var(--muted);font-size:12px}
@@ -272,8 +279,8 @@ HTML = r"""<!doctype html>
         <div class="filter"><label>Max price</label><input id="maxPrice" inputmode="numeric" placeholder="Any"></div>
         <div class="filter"><label>Min seller</label><input id="minSeller" inputmode="numeric" placeholder="Any %"></div>
         <div class="filter"><label>Min score</label><input id="minScore" inputmode="numeric" placeholder="Default"></div>
-        <div class="filter"><label>Sort</label><select id="sortBy"><option value="smart">For you</option><option value="priceAsc">Price ↑</option><option value="priceDesc">Price ↓</option><option value="seller">Seller</option></select></div>
-        <div class="wide"><button class="chip" id="auctionOnly">Auctions</button><button class="chip" id="savedOnly">Saved</button><button class="chip" onclick="clearFilters()">Clear</button></div>
+        <div class="filter"><label>Sort</label><select id="sortBy"><option value="smart">For you</option><option value="priceAsc">Price ↑</option><option value="priceDesc">Price ↓</option><option value="seller">Seller</option><option value="auth">AG class</option></select></div>
+        <div class="wide"><button class="chip" id="auctionOnly">Auctions</button><button class="chip" id="savedOnly">Saved</button><button class="chip" id="agOnly" title="Authenticity Guarantee applies, but the description says it needs work">&#10022; AG as-is</button><button class="chip" onclick="clearFilters()">Clear</button></div>
       </div>
     </div>
     <main class="feed" id="feed"></main>
@@ -411,12 +418,20 @@ function factChips(item){
   const risks = String(item.risk_tags || '');
   const reasons = String(item.reasons || '');
   const chips = [];
+  // Does eBay authenticate this watch? Always answered, never left blank:
+  // "no AG" and "not checked" are different facts and neither is silence.
+  // AG_ARBITRAGE outranks the plain yes — same guarantee, broken watch.
+  const ag = String(item.auth_arbitrage_class || '');
+  const hasAg = item.has_authenticity_guarantee;
+  if (ag === 'AG_ARBITRAGE') chips.push('<span class="fact arb">&#10022; AG as-is</span>');
+  else if (hasAg === 1 || hasAg === true) chips.push('<span class="fact good">AG</span>');
+  else if (hasAg === 0 || hasAg === false) chips.push('<span class="fact off">no AG</span>');
+  else chips.push('<span class="fact off">AG ?</span>');
   if (item.seller_pct) chips.push(`<span class="fact good">seller ${Math.round(item.seller_pct)}%</span>`);
   if (item.buying_option === 'AUCTION' && item.bid_count) chips.push(`<span class="fact">${item.bid_count} bids</span>`);
-  if (reasons.includes('auth-guarantee')) chips.push('<span class="fact good">auth</span>');
   if (c.foreign) chips.push(`<span class="fact warn">${c.cc} import</span>`);
   if (risks.includes('humidity/moisture')) chips.push('<span class="fact warn">moisture</span>');
-  return chips.slice(0, 3).join('');
+  return chips.slice(0, 4).join('');
 }
 function isActive(item){ return Number(item.active ?? 1) !== 0; }
 function inactiveLabel(item){
@@ -509,7 +524,13 @@ function filters(){
     sortBy: $('sortBy').value,
     auctionOnly: $('auctionOnly').classList.contains('active'),
     savedOnly: $('savedOnly').classList.contains('active'),
+    agOnly: $('agOnly').classList.contains('active'),
   };
+}
+const AG_ORDER = ['AG_ARBITRAGE','HONEST_BROKEN','AG_UNKNOWN','AG_CLEAN','NO_AG_OTHER'];
+function agRank(item){
+  const i = AG_ORDER.indexOf(String(item.auth_arbitrage_class || ''));
+  return i < 0 ? AG_ORDER.length : i;
 }
 function applyFilters(){
   const f = filters();
@@ -519,12 +540,19 @@ function applyFilters(){
   if (f.minScore) rows = rows.filter(r => Number(r.smart_score || r.score || 0) >= f.minScore);
   if (f.auctionOnly) rows = rows.filter(r => r.buying_option === 'AUCTION');
   if (f.savedOnly) rows = rows.filter(r => r.saved);
+  if (f.agOnly) rows = rows.filter(r => r.auth_arbitrage_class === 'AG_ARBITRAGE');
   rows.sort((a,b) => {
     if (f.sortBy === 'priceAsc') return landedNumber(a) - landedNumber(b);
     if (f.sortBy === 'priceDesc') return landedNumber(b) - landedNumber(a);
     if (f.sortBy === 'seller') return Number(b.seller_pct||0) - Number(a.seller_pct||0);
     if (f.sortBy === 'opportunity') return Number(b.opportunity||0) - Number(a.opportunity||0);
     if (f.sortBy === 'confidence') return Number(b.confidence||0) - Number(a.confidence||0);
+    // AG_ARBITRAGE first, then score inside each bucket. Only listings that
+    // have been through getItem carry a class, so the rest sort last.
+    if (f.sortBy === 'auth') {
+      const r = agRank(a) - agRank(b);
+      if (r) return r;
+    }
     return Number(b.smart_score||b.score||0) - Number(a.smart_score||a.score||0);
   });
   $('shownCount').textContent = rows.length + ' shown';
@@ -612,11 +640,13 @@ function clearFilters(){
   $('sortBy').value = 'smart';
   $('auctionOnly').classList.remove('active');
   $('savedOnly').classList.remove('active');
+  $('agOnly').classList.remove('active');
   applyFilters();
 }
 ['maxPrice','minSeller','minScore','sortBy'].forEach(id => $(id).addEventListener('input', applyFilters));
 $('auctionOnly').onclick = () => { $('auctionOnly').classList.toggle('active'); applyFilters(); };
 $('savedOnly').onclick = () => { $('savedOnly').classList.toggle('active'); applyFilters(); };
+$('agOnly').onclick = () => { $('agOnly').classList.toggle('active'); applyFilters(); };
 
 let swipe = null;
 function swipeStart(x,y){ swipe = {x,y}; }
@@ -746,18 +776,6 @@ def parse_item_ref(raw: str) -> tuple[str, str]:
                          if resolved == raw else
                          "that link redirected but never revealed a listing id")
     raise ValueError("no listing id found in that text")
-
-
-def _strip_html(html: str) -> str:
-    """Seller descriptions are hand-rolled HTML; reduce to readable text."""
-    text = re.sub(r"(?is)<(script|style).*?</\1>", " ", html or "")
-    text = re.sub(r"(?i)<br\s*/?>|</p>|</div>|</li>|</tr>", "\n", text)
-    text = re.sub(r"<[^>]+>", " ", text)
-    for entity, char in (("&nbsp;", " "), ("&amp;", "&"), ("&lt;", "<"),
-                         ("&gt;", ">"), ("&quot;", '"'), ("&#39;", "'")):
-        text = text.replace(entity, char)
-    lines = [re.sub(r"[ \t\r\f\v]+", " ", ln).strip() for ln in text.split("\n")]
-    return "\n".join(ln for ln in lines if ln)
 
 
 # Aspect names vary by seller ("Case Size", "Case Diameter", "Dial Diameter"),
@@ -946,6 +964,9 @@ def item_summary(d: dict) -> dict:
     key_specs, spec_names = _key_specs(aspects)
     description = _strip_html(d.get("description") or "")
     short_desc = d.get("shortDescription") or ""
+    # The AG-arbitrage read: is this covered by Authenticity Guarantee
+    # while the seller quietly says in prose that it doesn't run?
+    auth = authguard.classify(d)
     cond_desc = _strip_html(d.get("conditionDescription") or "")
     model, ref = _model_ref(aspects, short_desc + "\n" + description)
     box = next((v for k, v in aspects.items()
@@ -1005,7 +1026,16 @@ def item_summary(d: dict) -> dict:
         "condition": d.get("condition"),
         # Numeric and locale-stable (7000 = for parts, 3000 = used), unlike
         # the free-text condition above.
-        "condition_id": d.get("conditionId"),
+        "condition_id": auth["condition_id"],
+        # Authenticity Guarantee comes straight off qualifiedPrograms.
+        # Never inferred from price: that threshold varies by category
+        # and eBay has moved it before.
+        "has_authenticity_guarantee": auth["has_authenticity_guarantee"],
+        "qualified_programs": auth["qualified_programs"],
+        "description_indicates_as_is": auth["description_indicates_as_is"],
+        "as_is_terms": auth["as_is_terms"],
+        "as_is_excerpt": auth["as_is_excerpt"],
+        "auth_arbitrage_class": auth["auth_arbitrage_class"],
         "ends": end,
         "time_left": time_left,
         "listed": created,
@@ -1323,6 +1353,18 @@ button:disabled{opacity:.55}
 .callout.bad{background:rgba(255,77,61,.12);border-color:#ff4d3d;color:#ff6b5c;font-size:21px}
 .callout.good{background:rgba(74,222,128,.1);border-color:#4ade80;color:#7ee2a8}
 .callout.warn{background:rgba(251,191,36,.1);border-color:#fbbf24;color:#fde68a;font-size:17px}
+/* The Authenticity Guarantee verdict. AG is switched on by conditionId, so a
+   watch listed pre-owned whose description admits it doesn't run still ships
+   through third-party authentication — that pairing is the whole point of
+   this banner, and it gets the gold. */
+.ag{margin:0 0 10px;padding:11px 12px;border-radius:12px;border:1px solid;
+ font-size:14px;font-weight:800;line-height:1.35}
+.ag .why{display:block;margin-top:5px;font-size:12px;font-weight:600;opacity:.85}
+.ag.arb{background:rgba(240,214,122,.14);border-color:#f0d67a;color:#ffe9a3;
+ font-size:18px;box-shadow:0 0 0 1px rgba(240,214,122,.25)}
+.ag.unknown{background:rgba(251,191,36,.1);border-color:rgba(251,191,36,.5);color:#fde68a}
+.ag.clean{background:rgba(74,222,128,.08);border-color:rgba(74,222,128,.4);color:#7ee2a8}
+.ag.parts{background:rgba(148,163,184,.08);border-color:#23395c;color:#9fb0c9}
 .listed{color:#7dd3fc;font-size:17px;font-weight:800}
 .model{font-weight:800;font-size:15px}
 .fb{font-weight:700}
@@ -1571,6 +1613,26 @@ function stale(msg){
 document.addEventListener('visibilitychange', function(){
   if (!document.hidden && document.getElementById('tl')) go(true);
 });
+// conditionId decides AG, the description decides whether it's broken, and
+// the interesting listings are the ones where those two disagree.
+var AG_BANNER = {
+  AG_ARBITRAGE: ['arb', '\\u2726 AG ARBITRAGE',
+    'Authenticity Guarantee applies, yet the seller\\u2019s own description says it needs work.'],
+  AG_UNKNOWN: ['unknown', 'AG \\u00b7 description unreadable',
+    'Authenticity Guarantee applies. No readable description has been read for this listing, so the as-is check could not run \\u2014 this is not a clean listing, it is an unread one.'],
+  AG_CLEAN: ['clean', 'AG \\u00b7 nothing claimed wrong',
+    'Authenticity Guarantee applies and the description admits no faults.'],
+  HONEST_BROKEN: ['parts', 'FOR PARTS \\u00b7 no AG',
+    'conditionId 7000 is excluded from Authenticity Guarantee, whatever the description says.']
+};
+function agBanner(s){
+  var e = AG_BANNER[s.auth_arbitrage_class];
+  if (!e) return '';
+  var why = (s.auth_arbitrage_class === 'AG_ARBITRAGE' && s.as_is_excerpt)
+          ? '\\u201c' + s.as_is_excerpt + '\\u201d' : e[2];
+  return '<div class="ag ' + e[0] + '">' + e[1]
+       + '<span class="why">' + esc(why) + '</span></div>';
+}
 function go(silent){
   var q = document.getElementById('q').value.trim();
   if (!q) return;
@@ -1615,6 +1677,7 @@ function go(silent){
         + (s.short_description ? '<p class="sd">' + esc(s.short_description) + '</p>' : '')
         + (s.condition ? '<div class="callout' + condCls + '">' + esc(s.condition)
                          + '</div>' : '')
+        + agBanner(s)
         + (s.condition_description
              ? '<p class="sd note">' + esc(s.condition_description) + '</p>' : '')
         + caseAndLug(s)
@@ -1796,6 +1859,20 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
 .fl.bad{color:#ff5b48;border-color:#ff4d3d;background:rgba(255,77,61,.13)}
 .fl.warn{color:#fbbf24;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
 .fl.good{color:#4ade80;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
+/* Authenticity Guarantee is switched on by conditionId, so a lot listed
+   pre-owned whose description admits it is broken still ships authenticated.
+   That is the find on this page, and it gets the gold and the card border. */
+.fl.ag{color:#ffe9a3;border-color:#f0d67a;background:rgba(240,214,122,.16)}
+.fl.agq{color:#fde68a;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
+.fl.agc{color:#7ee2a8;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
+.card.arb{border-color:#f0d67a;box-shadow:0 0 0 1px rgba(240,214,122,.25)}
+/* The seller's own sentence, quoted under the chips — the evidence for the
+   verdict, in his words rather than ours. */
+.why{flex-basis:100%;margin:3px 0 0;color:#c9d6e8;font-size:12px;line-height:1.35}
+.picks{display:flex;gap:8px;margin:8px 0 2px}
+.picks select{font:inherit;font-size:12px;font-weight:700;color:#c9d6e8;
+ background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 8px}
+.picks select.on{color:#ffe9a3;border-color:#f0d67a}
 .mm{color:#8ba0bd;font-weight:700}
 .mm.ok{color:#7dd3fc}
 .err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
@@ -1828,6 +1905,7 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
           aria-label="Refresh">&#8635;</button>
 </div>
 <div class="filters" id="filters"></div>
+<div class="picks" id="picks"></div>
 <div class="status" id="status"></div>
 <div id="out"></div>
 <div id="foot"></div>
@@ -1866,17 +1944,36 @@ function fmtLeft(ms){
 // which is a slow parse and a slow paint on a phone. LIMIT 0 means everything.
 var LIMIT = 60, TOTAL = 0, ITEMS = [], ticker = null, flagTries = 0;
 var SAVED = 0, DOWN = 0, VIEW = '';
+var KLASS = '', SORT = '', AUTH_COUNTS = {}, AUTH_READ = 0;
+// Kept in the page's order of interest, which is also the server's sort order.
+var AG_CLASSES = ['AG_ARBITRAGE', 'HONEST_BROKEN', 'AG_UNKNOWN',
+                  'AG_CLEAN', 'NO_AG_OTHER'];
+var AG_NAMES = {
+  AG_ARBITRAGE: '\\u2726 AG arbitrage', HONEST_BROKEN: 'for parts \\u00b7 no AG',
+  AG_UNKNOWN: 'AG \\u00b7 unread description', AG_CLEAN: 'AG \\u00b7 nothing claimed',
+  NO_AG_OTHER: 'no AG'
+};
+var AG_CHIPS = {AG_ARBITRAGE: ['ag', '\\u2726 AG ARBITRAGE']};
 // Same monochrome thumb the main app uses, so a vote looks the same everywhere.
 var THUMB_SVG = '<svg viewBox="0 0 24 24" stroke-width="2" stroke-linecap="round"'
   + ' stroke-linejoin="round" aria-hidden="true"><path d="M17 14V3"/>'
   + '<path d="M7 10.5 9.1 3H17v11h-5.2l-1.5 5.2c-.2.7-.8 1.2-1.6 1.2h-.4c-.8 0'
   + '-1.4-.8-1.2-1.6L8.4 14H5.2c-1.2 0-2.1-1.1-1.8-2.3l1.3-5.2C5 5.6 5.8 5 6.7 5h2"/>'
   + '</svg>';
-function flagHtml(flags){
-  if (!flags || !flags.length) return '';
-  return flags.map(function(f){
+function flagHtml(it){
+  // The gold chip is the find; otherwise just say whether eBay authenticates
+  // it, which the search hit knows for every lot from the first paint.
+  var out = '', chip = AG_CHIPS[it.auth_arbitrage_class];
+  if (chip) out += '<span class="fl ' + chip[0] + '">' + chip[1] + '</span>';
+  else if (it.has_authenticity_guarantee)
+    out += '<span class="fl agc">AG</span>';
+  out += (it.flags || []).map(function(f){
     return '<span class="fl ' + esc(f.sev) + '">' + esc(f.label) + '</span>';
   }).join('');
+  // Why we called it arbitrage: the sentence the seller wrote.
+  if (it.auth_arbitrage_class === 'AG_ARBITRAGE' && it.as_is_excerpt)
+    out += '<p class="why">\\u201c' + esc(it.as_is_excerpt) + '\\u201d</p>';
+  return out;
 }
 function toTop(){
   var from = window.scrollY;
@@ -1949,11 +2046,49 @@ function paintFilters(){
       + (VIEW === 'disliked' ? ' on' : '') + '" onclick="setView(\\'disliked\\')">'
       + THUMB_SVG + 'buried' + (DOWN ? ' (' + DOWN + ')' : '') + '</button>';
 }
+// Filter and sort on the AG class. Only lots the background detail pass has
+// already read carry one, so the status line says how many that is.
+var PICKS_SIG = '';
+function paintPicks(){
+  var el = document.getElementById('picks');
+  if (!el) return;
+  // The flag poll lands every couple of seconds while the detail pass runs.
+  // Rebuilding the selects each time would snap an open dropdown shut under
+  // your thumb, so only redraw when the counts or the choices actually moved.
+  var sig = KLASS + '|' + SORT + '|'
+          + AG_CLASSES.map(function(c){ return AUTH_COUNTS[c] || 0; }).join(',');
+  if (sig === PICKS_SIG) return;
+  PICKS_SIG = sig;
+  var opts = '<option value="">AG: all classes</option>'
+    + AG_CLASSES.map(function(c){
+        var n = AUTH_COUNTS[c] || 0;
+        return '<option value="' + c + '"' + (KLASS === c ? ' selected' : '')
+             + (n ? '' : ' disabled') + '>' + AG_NAMES[c]
+             + (n ? ' (' + n + ')' : '') + '</option>';
+      }).join('');
+  el.innerHTML =
+    '<select id="agSel" class="' + (KLASS ? 'on' : '')
+      + '" aria-label="Filter by Authenticity Guarantee class"'
+      + ' onchange="setKlass(this.value)">' + opts + '</select>'
+    + '<select id="sortSel" class="' + (SORT ? 'on' : '')
+      + '" aria-label="Sort order" onchange="setSort(this.value)">'
+      + '<option value=""' + (SORT ? '' : ' selected') + '>sort: taste</option>'
+      + '<option value="auth"' + (SORT ? ' selected' : '')
+      + '>sort: AG class</option></select>';
+}
+function setKlass(v){ KLASS = v; flagTries = 0; load(false); }
+function setSort(v){ SORT = v; flagTries = 0; load(false); }
+// Every request carries the current view, class filter and sort together.
+function query(){
+  return '/api/rarities?limit=' + LIMIT + (VIEW ? '&view=' + VIEW : '')
+       + (KLASS ? '&class=' + KLASS : '') + (SORT ? '&sort=' + SORT : '');
+}
 // Tapping the active filter returns to the full list.
 function setView(v){
   VIEW = (VIEW === v) ? '' : v;
   flagTries = 0;
   paintFilters();
+  paintPicks();
   load(false);
 }
 // The Pi serves plain http, where navigator.clipboard does not exist, so the
@@ -1998,7 +2133,10 @@ function copyItem(i){
 function patchFlags(items){
   items.forEach(function(it, i){
     var el = document.getElementById('fl-' + i);
-    if (el && it.flags) el.innerHTML = flagHtml(it.flags);
+    if (el && it.flags) el.innerHTML = flagHtml(it);
+    var card = document.getElementById('card-' + i);
+    if (card) card.classList.toggle('arb',
+      it.auth_arbitrage_class === 'AG_ARBITRAGE');
   });
 }
 function paintClocks(){
@@ -2014,7 +2152,9 @@ function render(items){
   ITEMS = items;
   document.getElementById('out').innerHTML = items.map(function(it, i){
     return '<div class="card' + (it.saved ? ' saved' : '')
-      + (it.disliked ? ' disliked' : '') + '" id="card-' + i + '">'
+      + (it.disliked ? ' disliked' : '')
+      + (it.auth_arbitrage_class === 'AG_ARBITRAGE' ? ' arb' : '')
+      + '" id="card-' + i + '">'
       + '<div class="pic">'
       +   '<a href="' + esc(it.url) + '" target="_blank" rel="noopener">'
       +   (it.image ? '<img class="shot" loading="lazy" src="' + esc(it.image) + '" alt="">' : '')
@@ -2029,7 +2169,7 @@ function render(items){
       +       'aria-label="Less like this">' + THUMB_SVG + '</button>'
       +   '</div>'
       + '</div>'
-      + '<div class="flags" id="fl-' + i + '">' + flagHtml(it.flags) + '</div>'
+      + '<div class="flags" id="fl-' + i + '">' + flagHtml(it) + '</div>'
       + '<div class="info">'
       +   '<div class="row">'
       +     '<div class="bid">' + money(it.bid)
@@ -2055,6 +2195,26 @@ function render(items){
   paintFoot();
   paintTop();
 }
+// Says what is on screen and, when it matters, how much of the consignment has
+// actually been read: an AG filter only sees lots the detail pass has fetched,
+// and pretending otherwise would make a thin result look like proof.
+function paintStatus(d){
+  var st = document.getElementById('status');
+  if (!st) return;
+  var what = KLASS
+             ? d.items.length + (d.items.length === 1 ? ' lot ' : ' lots ')
+               + '\\u00b7 ' + AG_NAMES[KLASS]
+           : (VIEW ? d.items.length + (VIEW === 'saved' ? ' hearted' : ' buried')
+           : (d.items.length < TOTAL
+               ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
+               : TOTAL + ' auctions'));
+  var read = (KLASS || SORT)
+    ? ' \\u00b7 ' + AUTH_READ + ' of ' + (d.consignment_total || TOTAL)
+      + ' read' + (d.details_pending ? ', still reading' : '')
+    : '';
+  st.textContent = what + read + ' \\u00b7 updated ' + d.updated
+                 + (d.cached_secs ? ' (cached)' : '');
+}
 function paintFoot(){
   var foot = document.getElementById('foot');
   if (LIMIT && TOTAL > ITEMS.length) {
@@ -2078,13 +2238,16 @@ function pollFlags(){
   if (flagTries >= 6) return;
   flagTries++;
   setTimeout(function(){
-    fetch('/api/rarities?limit=' + LIMIT + (VIEW ? '&view=' + VIEW : '')
-          + '&_=' + Date.now(), {cache: 'no-store'})
+    fetch(query() + '&_=' + Date.now(), {cache: 'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(d){
         if (!d.items) return;
         ITEMS = d.items;
+        AUTH_COUNTS = d.auth_counts || {};
+        AUTH_READ = d.auth_read || 0;
+        paintPicks();
         patchFlags(d.items);
+        paintStatus(d);
         if (d.details_pending) pollFlags();
       })
       .catch(function(){});
@@ -2097,8 +2260,7 @@ function load(fresh){
   var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
   btn.disabled = true;
   if (!ITEMS.length) st.textContent = 'Fetching the week\\u2019s auctions\\u2026';
-  fetch('/api/rarities?limit=' + LIMIT + (VIEW ? '&view=' + VIEW : '')
-        + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
+  fetch(query() + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
     .then(function(r){ return r.json(); })
     .then(function(d){
       if (d.error) {
@@ -2112,16 +2274,14 @@ function load(fresh){
       TOTAL = d.total || d.items.length;
       SAVED = d.saved_count || 0;
       DOWN = d.disliked_count || 0;
+      AUTH_COUNTS = d.auth_counts || {};
+      AUTH_READ = d.auth_read || 0;
       paintFilters();
+      paintPicks();
       render(d.items);
       flagTries = 0;
       if (d.details_pending) pollFlags();
-      st.textContent = (VIEW
-          ? d.items.length + (VIEW === 'saved' ? ' hearted' : ' buried')
-          : (d.items.length < TOTAL
-              ? 'Top ' + d.items.length + ' of ' + TOTAL + ' lots'
-              : TOTAL + ' auctions'))
-        + ' \\u00b7 updated ' + d.updated + (d.cached_secs ? ' (cached)' : '');
+      paintStatus(d);
     })
     .catch(function(e){
       if (!ITEMS.length)
@@ -2257,17 +2417,36 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(params.get("limit", ["60"])[0])
             except ValueError:
                 limit = 60
+            # Attach everything the detail pass has read so far across the whole
+            # consignment: filtering and sorting on the AG class needs the class
+            # present before the slice, not after it.
+            apply_details(items)
+            auth_counts = authguard.class_counts(
+                i.get("auth_arbitrage_class") for i in items)
             view = params.get("view", [""])[0]
             if view == "saved":
                 items = [i for i in items if i.get("saved")]
             elif view == "disliked":
                 items = [i for i in items if i.get("disliked")]
+            klass = params.get("class", [""])[0].upper()
+            if klass in authguard.CLASSES:
+                items = [i for i in items
+                         if i.get("auth_arbitrage_class") == klass]
+            if params.get("sort", [""])[0] == "auth":
+                # AG_ARBITRAGE first, then taste inside each bucket. Lots the
+                # detail pass has not reached yet have no class, and sort last.
+                rank = {name: n for n, name in enumerate(authguard.CLASSES)}
+                items = sorted(items, key=lambda i: (
+                    rank.get(i.get("auth_arbitrage_class"), len(rank)),
+                    -i["taste"], i["ends"] or "9999"))
             shown = items[:limit] if limit > 0 else items
             # Condition text arrives on a background pass; the page asks again
             # while `details_pending` is non-zero and patches the chips in.
             pending = apply_details(shown)
             if pending:
-                start_detail_pass(ebay_client(), items, top=max(limit, 60))
+                # Always the taste-ranked full list, never the filtered view:
+                # which lots are worth a getItem is not the filter's business.
+                start_detail_pass(ebay_client(), data["items"], top=max(limit, 60))
             self._json(HTTPStatus.OK, {
                 "updated": _now_str(),
                 "seller": RARITIES_SELLER,
@@ -2277,6 +2456,9 @@ class Handler(BaseHTTPRequestHandler):
                 "saved_count": sum(1 for i in data["items"] if i.get("saved")),
                 "disliked_count": sum(1 for i in data["items"] if i.get("disliked")),
                 "details_pending": pending,
+                "auth_counts": auth_counts,
+                "auth_read": sum(auth_counts.values()),
+                "consignment_total": len(data["items"]),
                 "items": shown,
             })
             return

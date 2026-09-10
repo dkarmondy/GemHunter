@@ -35,6 +35,14 @@ class Listing:
     # --- enriched from getItem (only for scored candidates) ---
     aspects: dict = field(default_factory=dict)   # {"Case Size": "40 mm", ...}
     auth_guarantee: bool = False
+    # eBay's numeric condition (3000 = pre-owned, 7000 = for parts). The AG
+    # programme is switched on from this, never from the description.
+    condition_id: int | None = None
+    # True/False from the seller's prose, or None when it couldn't be read —
+    # see authguard.description_text for why None is not False.
+    description_indicates_as_is: bool | None = None
+    auth_arbitrage_class: str = ""
+    as_is_terms: list = field(default_factory=list)
 
     @property
     def is_auction(self) -> bool:
