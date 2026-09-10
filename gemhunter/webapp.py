@@ -1373,18 +1373,25 @@ button:disabled{opacity:.55}
 .callout.bad{background:rgba(255,77,61,.12);border-color:#ff4d3d;color:#ff6b5c;font-size:21px}
 .callout.good{background:rgba(74,222,128,.1);border-color:#4ade80;color:#7ee2a8}
 .callout.warn{background:rgba(251,191,36,.1);border-color:#fbbf24;color:#fde68a;font-size:17px}
-/* The Authenticity Guarantee verdict. AG is switched on by conditionId, so a
-   watch listed pre-owned whose description admits it doesn't run still ships
-   through third-party authentication — that pairing is the whole point of
-   this banner, and it gets the gold. */
-.ag{margin:0 0 10px;padding:11px 12px;border-radius:12px;border:1px solid;
- font-size:14px;font-weight:800;line-height:1.35}
-.ag .why{display:block;margin-top:5px;font-size:12px;font-weight:600;opacity:.85}
-.ag.arb{background:rgba(240,214,122,.14);border-color:#f0d67a;color:#ffe9a3;
- font-size:18px;box-shadow:0 0 0 1px rgba(240,214,122,.25)}
-.ag.unknown{background:rgba(251,191,36,.1);border-color:rgba(251,191,36,.5);color:#fde68a}
-.ag.clean{background:rgba(74,222,128,.08);border-color:rgba(74,222,128,.4);color:#7ee2a8}
-.ag.parts{background:rgba(148,163,184,.08);border-color:#23395c;color:#9fb0c9}
+/* Authenticity Guarantee, in the badge eBay puts on the listing itself: a
+   blue seal and a tick when it applies, a red one and a cross when it does
+   not. One fact, stated the way he already reads it on eBay — the reasoning
+   about conditionId belongs in the code, not on the card. */
+.agb{display:flex;align-items:center;gap:9px;margin:0 0 10px;padding:10px 12px;
+ border-radius:12px;border:1px solid;font-size:16px;font-weight:800;line-height:1.2}
+.agb svg{width:25px;height:25px;flex:none}
+.agb .tick{fill:none;stroke:#fff;stroke-width:2.3;stroke-linecap:round;
+ stroke-linejoin:round}
+.agb.yes{background:rgba(54,101,243,.14);border-color:rgba(54,101,243,.6);color:#d3e1ff}
+.agb.yes .seal{fill:#3665f3}
+.agb.no{background:rgba(224,50,43,.1);border-color:rgba(224,50,43,.5);color:#ffc9c1}
+.agb.no .seal{fill:#e0322b}
+/* What the seller admits, under the badge. Blue seal plus a gold note is the
+   find: authenticated by eBay, and broken according to the man selling it. */
+.agnote{margin:-2px 0 10px;padding:9px 11px;border-radius:0 10px 10px 0;
+ font-size:13px;line-height:1.4;background:rgba(240,214,122,.1);
+ border-left:3px solid #f0d67a;color:#ffe9a3}
+.agnote.unread{background:rgba(251,191,36,.08);border-left-color:#fbbf24;color:#fde68a}
 .listed{color:#7dd3fc;font-size:17px;font-weight:800}
 .model{font-weight:800;font-size:15px}
 .fb{font-weight:700}
@@ -1645,25 +1652,30 @@ function stale(msg){
 document.addEventListener('visibilitychange', function(){
   if (!document.hidden && document.getElementById('tl')) go(true);
 });
-// conditionId decides AG, the description decides whether it's broken, and
-// the interesting listings are the ones where those two disagree.
-var AG_BANNER = {
-  AG_ARBITRAGE: ['arb', '\\u2726 AG ARBITRAGE',
-    'Authenticity Guarantee applies, yet the seller\\u2019s own description says it needs work.'],
-  AG_UNKNOWN: ['unknown', 'AG \\u00b7 description unreadable',
-    'Authenticity Guarantee applies. No readable description has been read for this listing, so the as-is check could not run \\u2014 this is not a clean listing, it is an unread one.'],
-  AG_CLEAN: ['clean', 'AG \\u00b7 nothing claimed wrong',
-    'Authenticity Guarantee applies and the description admits no faults.'],
-  HONEST_BROKEN: ['parts', 'FOR PARTS \\u00b7 no AG',
-    'conditionId 7000 is excluded from Authenticity Guarantee, whatever the description says.']
-};
+// eBay's own seal, redrawn: a twelve-lobed rosette with a tick through it,
+// or a cross when the programme does not cover this listing.
+var AG_SEAL = '<svg viewBox="0 0 24 24" aria-hidden="true">'
+  + '<path class="seal" d="M12.00 2.10Q15.03 0.70 16.95 3.43Q20.27 3.73 20.57 7.05Q23.30 8.97 21.90 12.00Q23.30 15.03 20.57 16.95Q20.27 20.27 16.95 20.57Q15.03 23.30 12.00 21.90Q8.97 23.30 7.05 20.57Q3.73 20.27 3.43 16.95Q0.70 15.03 2.10 12.00Q0.70 8.97 3.43 7.05Q3.73 3.73 7.05 3.43Q8.97 0.70 12.00 2.10Z"/>';
+var AG_TICK = AG_SEAL + '<path class="tick" d="M7.4 12.2l3.1 3.1 6.1-6.4"/></svg>';
+var AG_CROSS = AG_SEAL + '<path class="tick" d="M8.6 8.6l6.8 6.8M15.4 8.6l-6.8 6.8"/></svg>';
+// One badge answers the only question worth asking first: does eBay
+// authenticate this watch? Anything the seller admits about its condition
+// rides underneath, because it is a separate fact and not a smaller one.
 function agBanner(s){
-  var e = AG_BANNER[s.auth_arbitrage_class];
-  if (!e) return '';
-  var why = (s.auth_arbitrage_class === 'AG_ARBITRAGE' && s.as_is_excerpt)
-          ? '\\u201c' + s.as_is_excerpt + '\\u201d' : e[2];
-  return '<div class="ag ' + e[0] + '">' + e[1]
-       + '<span class="why">' + esc(why) + '</span></div>';
+  var has = s.has_authenticity_guarantee;
+  if (has == null) return '';
+  var out = '<div class="agb ' + (has ? 'yes' : 'no') + '">'
+          + (has ? AG_TICK : AG_CROSS) + '<span>'
+          + (has ? 'Authenticity Guarantee' : 'No Authenticity Guarantee')
+          + '</span></div>';
+  if (s.description_indicates_as_is === true)
+    out += '<div class="agnote"><b>Seller says it needs work</b>'
+         + (s.as_is_excerpt ? ' \\u2014 \\u201c' + esc(s.as_is_excerpt)
+            + '\\u201d' : '') + '</div>';
+  else if (has && s.description_indicates_as_is === null)
+    out += '<div class="agnote unread">No readable description came back, so '
+         + 'nothing here confirms it is sound.</div>';
+  return out;
 }
 function go(silent){
   var q = document.getElementById('q').value.trim();
@@ -1899,7 +1911,6 @@ h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
    pre-owned whose description admits it is broken still ships authenticated.
    That is the find on this page, and it gets the gold and the card border. */
 .fl.ag{color:#ffe9a3;border-color:#f0d67a;background:rgba(240,214,122,.16)}
-.fl.agq{color:#fde68a;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
 .fl.agc{color:#7ee2a8;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
 .card.arb{border-color:#f0d67a;box-shadow:0 0 0 1px rgba(240,214,122,.25)}
 /* The seller's own sentence, quoted under the chips — the evidence for the
