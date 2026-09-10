@@ -924,6 +924,22 @@ def _format_time_left(secs: float) -> str:
     return f"{mins}m {sec}s"
 
 
+def _format_age(secs: float) -> str:
+    """How long ago something was listed, to the minute inside the first day.
+
+    "0d ago" is the least useful thing to say about a listing posted this
+    morning: under a day the hours and minutes are the whole point, because
+    that is the only window in which being early is worth anything.
+    """
+    if secs < 0:
+        return "0m"
+    days = int(secs // 86400)
+    if days:
+        return f"{days}d"
+    hours, mins = int(secs % 86400 // 3600), int(secs % 3600 // 60)
+    return f"{hours}h {mins}m" if hours else f"{mins}m"
+
+
 def item_summary(d: dict) -> dict:
     """The handful of fields worth reading on a phone, off the raw response."""
     options = d.get("buyingOptions") or []
@@ -943,13 +959,14 @@ def item_summary(d: dict) -> dict:
     seller = d.get("seller") or {}
     primary = (d.get("image") or {}).get("imageUrl", "")
     created = d.get("itemCreationDate") or ""
-    listed_days = None
+    listed_days = listed_ago = None
     if created:
         try:
             cdt = datetime.strptime(created[:19], "%Y-%m-%dT%H:%M:%S") \
                           .replace(tzinfo=timezone.utc)
-            listed_days = int((datetime.now(timezone.utc) - cdt)
-                              .total_seconds() // 86400)
+            age = (datetime.now(timezone.utc) - cdt).total_seconds()
+            listed_days = int(age // 86400)
+            listed_ago = _format_age(age)
         except ValueError:
             pass
     # Sold vs expired-unsold changes how to read the price entirely: a sold
@@ -1040,6 +1057,9 @@ def item_summary(d: dict) -> dict:
         "time_left": time_left,
         "listed": created,
         "listed_days": listed_days,
+        # Whole days for anything older, hours and minutes inside the first
+        # one — `listed_days` alone flattens a fresh listing to a bare 0.
+        "listed_ago": listed_ago,
         "availability": avail.get("estimatedAvailabilityStatus"),
         "sold_qty": avail.get("estimatedSoldQuantity"),
         "remaining_qty": avail.get("estimatedRemainingQuantity"),
@@ -1553,6 +1573,18 @@ function ago(ms){
   var m = Math.floor(s / 60);
   return m < 60 ? m + 'm ago' : Math.floor(m / 60) + 'h ago';
 }
+// Listing age, as opposed to ago() above, which says how stale *our fetch* is
+// and rounds away the minutes. Four hours old and four minutes old are
+// different opportunities, so inside the first day this keeps them.
+function listedAgo(iso){
+  var t = Date.parse(iso);
+  if (isNaN(t)) return '';
+  var secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  var d = Math.floor(secs / 86400);
+  if (d) return d + 'd ago';
+  var h = Math.floor(secs % 86400 / 3600), m = Math.floor(secs % 3600 / 60);
+  return (h ? h + 'h ' + m + 'm' : m + 'm') + ' ago';
+}
 function fmtLeft(ms){
   if (ms <= 0) return 'ended';
   var t = Math.floor(ms / 1000);
@@ -1670,6 +1702,10 @@ function go(silent){
                 : (pct >= 99 && sc >= 100 ? ' good' : ''));
       var fbText = pct == null ? null
                  : pct + '% · ' + sc + (sc < 10 ? ' sales — thin history' : ' sales');
+      // The server sends listed_ago too; recomputing here keeps a page left
+      // open honest, and covers a fixed-price listing that never refreshes.
+      var listedAge = listedAgo(s.listed) || s.listed_ago
+                    || (s.listed_days != null ? s.listed_days + 'd ago' : '');
       var h = '<div class="card">'
         + (s.image ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">'
                      + '<img class="shot" src="' + esc(s.image) + '" alt=""></a>' : '')
@@ -1704,7 +1740,7 @@ function go(silent){
         + (s.listed
              ? '<div class="k"><span>Listed</span><span class="listed">'
                + esc(s.listed.slice(0,10))
-               + (s.listed_days != null ? ' \\u00b7 ' + s.listed_days + 'd ago' : '')
+               + (listedAge ? ' \\u00b7 ' + listedAge : '')
                + '</span></div>'
              : '')
         + ((s.remaining_qty != null && (s.remaining_qty > 1 || (s.sold_qty || 0) > 1))
