@@ -1377,8 +1377,11 @@ button:disabled{opacity:.55}
    blue seal and a tick when it applies, a red one and a cross when it does
    not. One fact, stated the way he already reads it on eBay — the reasoning
    about conditionId belongs in the code, not on the card. */
-.agb{display:flex;align-items:center;gap:9px;margin:0 0 10px;padding:10px 12px;
+.agb{display:flex;align-items:center;gap:10px;margin:0 0 10px;padding:11px 12px;
  border-radius:12px;border:1px solid;font-size:16px;font-weight:800;line-height:1.2}
+/* The condition field is what decides the guarantee, so it is stated right
+   under the verdict rather than repeated in a callout of its own. */
+.agb small{display:block;margin-top:4px;font-size:13px;font-weight:700;opacity:.82}
 .agb svg{width:25px;height:25px;flex:none}
 .agb .tick{fill:none;stroke:#fff;stroke-width:2.3;stroke-linecap:round;
  stroke-linejoin:round}
@@ -1667,8 +1670,11 @@ function agBanner(s){
   var out = '<div class="agb ' + (has ? 'yes' : 'no') + '">'
           + (has ? AG_TICK : AG_CROSS) + '<span>'
           + (has ? 'Authenticity Guarantee' : 'No Authenticity Guarantee')
+          + (s.condition ? '<small>Condition: ' + esc(s.condition) + '</small>' : '')
           + '</span></div>';
-  if (s.description_indicates_as_is === true)
+  // On a for-parts listing the condition line already said it; quoting the
+  // seller saying it again is just the same fact twice.
+  if (s.description_indicates_as_is === true && Number(s.condition_id) !== 7000)
     out += '<div class="agnote"><b>Seller says it needs work</b>'
          + (s.as_is_excerpt ? ' \\u2014 \\u201c' + esc(s.as_is_excerpt)
             + '\\u201d' : '') + '</div>';
@@ -1702,10 +1708,6 @@ function go(silent){
       var bids = s.bid_count == null ? null
                : (s.unique_bidders ? s.bid_count + ' from ' + s.unique_bidders + ' bidders'
                                    : String(s.bid_count));
-      // For-parts is the single fact that decides whether this is bench work
-      // or a wearer, so it gets size and colour rather than a quiet row.
-      var cid = Number(s.condition_id);
-      var condCls = cid === 7000 ? ' bad' : (cid === 1000 || cid === 1500 ? ' good' : '');
       // A 100%/720 seller and a 91%/3 seller should not look alike at a glance.
       var pct = s.feedback_pct == null ? null : Number(s.feedback_pct);
       var sc = Number(s.feedback_score || 0);
@@ -1723,8 +1725,6 @@ function go(silent){
                      + '<img class="shot" src="' + esc(s.image) + '" alt=""></a>' : '')
         + '<p class="t">' + esc(s.title) + '</p>'
         + (s.short_description ? '<p class="sd">' + esc(s.short_description) + '</p>' : '')
-        + (s.condition ? '<div class="callout' + condCls + '">' + esc(s.condition)
-                         + '</div>' : '')
         + agBanner(s)
         + (s.condition_description
              ? '<p class="sd note">' + esc(s.condition_description) + '</p>' : '')

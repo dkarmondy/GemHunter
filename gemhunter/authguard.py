@@ -230,7 +230,14 @@ def classify(item: dict) -> dict:
     """The AG-arbitrage read on one Browse API `getItem` payload."""
     condition_id = _int_or_none(item.get("conditionId"))
     programs = item.get("qualifiedPrograms") or []
-    has_ag = AG_PROGRAM in programs if isinstance(programs, list) else False
+    in_programme = (AG_PROGRAM in programs) if isinstance(programs, list) else False
+    # The condition field is the gate. "For parts or not working" is barred
+    # from the programme outright, so it does not get the guarantee however
+    # the listing is otherwise flagged — and no wording in the description
+    # can cost a pre-owned listing its cover. Measured live, eBay already
+    # leaves the programme off every 7000 listing (155 of 155), so this is
+    # belt and braces; it is also the one rule that must never drift.
+    has_ag = in_programme and condition_id != FOR_PARTS_CONDITION_ID
     text, unread = description_text(item)
     terms = as_is_terms(text) if text else []
     excerpt = _excerpt(text) if terms else ""
@@ -259,6 +266,8 @@ def classify(item: dict) -> dict:
         "condition": item.get("condition") or "",
         "price": (item.get("price") or {}).get("value"),
         "qualified_programs": programs if isinstance(programs, list) else [],
+        # Whether the guarantee actually applies, condition taken into account
+        # — `qualified_programs` above is the raw claim, this is the answer.
         "has_authenticity_guarantee": has_ag,
         "description_indicates_as_is": indicates,
         "as_is_terms": terms,
