@@ -31,6 +31,10 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     candidates, seen_new, rejected = [], 0, 0
     seen_item_ids: set[str] = set()
     successful_searches = 0
+    # Listings where eBay's AG flag disagrees with the price floor we measured.
+    # Nothing acts on this — it is here so a threshold change announces itself
+    # instead of quietly widening what the scout should have been catching.
+    floor_breaks: list = []
 
     for search in cfg.searches:
         try:
@@ -42,6 +46,9 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
         for listing in listings:
             if listing.item_id:
                 seen_item_ids.add(listing.item_id)
+            if listing.auth_guarantee and authguard.below_expected_floor(
+                    listing.price, listing.currency, listing.is_auction):
+                floor_breaks.append(listing)
             if not storage.is_new(listing.item_id):
                 storage.record_observation(listing)
                 # Cheap and free with the search hit: keeps the AG answer on
@@ -92,6 +99,15 @@ def run_once(cfg: Config, ebay, storage: Storage, notifier: Notifier) -> int:
     alerted = keep[: cfg.alert_limit]
     for r in alerted:
         notifier.send_scored(r)
+
+    if floor_breaks:
+        cheapest = min(floor_breaks, key=lambda l: l.price)
+        print(f"[auth] tripwire: {len(floor_breaks)} fixed-price listing(s) carry "
+              f"Authenticity Guarantee below the ${authguard.AG_EXPECTED_FLOOR:,.0f} "
+              f"floor measured on 2026-09-10 — cheapest ${cheapest.price:,.0f}. "
+              f"eBay may have lowered the threshold; qualifiedPrograms is still "
+              f"being trusted, so no listing has been mislabelled.")
+        print(f"       {cheapest.title[:70]}")
 
     arbitrage = sum(1 for r in keep
                     if r.listing.auth_arbitrage_class == authguard.AG_ARBITRAGE)

@@ -42,6 +42,35 @@ AS_IS_PHRASES = [
 ]
 
 
+# eBay's own price gate for watch AG on EBAY_US, measured 2026-09-10: of 3,870
+# listings under this figure, not one carried the programme, and the cheapest
+# that did was exactly $2,000.00.
+#
+# It is deliberately NOT enforced. qualifiedPrograms decides, because eBay sets
+# this number per category and has moved it before — encoding it would turn
+# every listing in the gap into a silent false negative the day it changes.
+# Auctions ignore it outright: cover is granted from the listing, not the live
+# bid, so a covered lot can legitimately sit at $141 with two days left to run
+# (29 such auctions were open the day this was written). The constant exists
+# only so the scout can speak up when reality stops matching it.
+AG_EXPECTED_FLOOR = 2000.0
+
+
+def below_expected_floor(price, currency: str = "USD",
+                         is_auction: bool = False) -> bool:
+    """A fixed-price listing carrying AG under the observed floor.
+
+    True means eBay and the measurement disagree, which is worth hearing about
+    — most likely because the threshold moved. It changes no verdict.
+    """
+    if is_auction or (currency or "USD").upper() != "USD":
+        return False
+    try:
+        return 0 < float(price) < AG_EXPECTED_FLOOR
+    except (TypeError, ValueError):
+        return False
+
+
 def _phrase_pattern(phrase: str) -> str:
     out = []
     for ch in phrase:
