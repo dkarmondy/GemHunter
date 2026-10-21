@@ -1732,6 +1732,12 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path in ("/", "/index.html"):
             self._send(HTTPStatus.OK, _dashboard(), "text/html; charset=utf-8")
             return
+        # The retired feed's addresses; old home-screen icons still point here.
+        if parsed.path in ("/app", "/gems.html"):
+            self.send_response(HTTPStatus.FOUND)
+            self.send_header("Location", "/")
+            self.end_headers()
+            return
         if parsed.path == "/api/apps":
             self._json(HTTPStatus.OK, {"hub_port": HUB_PORT, "apps": APPS,
                                        "services": SERVICES})
