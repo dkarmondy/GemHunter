@@ -6,4 +6,4 @@ After=network-online.target
 Type=oneshot
 User=dkarm
 WorkingDirectory=/home/dkarm/Projects/GemHunter
-ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.rarities --db /mnt/ssd/gemhunter/gemhunter.db
+ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.rarities --db /home/dkarm/Projects/GemHunter/data/gemhunter.db

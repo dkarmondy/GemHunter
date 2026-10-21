@@ -1,22 +1,15 @@
-"""eBay Browse API client, plus a sample provider for dry-run mode.
-
-Both expose the same method:  search(search) -> list[Listing]
-so the rest of the app doesn't care which one it's talking to.
-"""
+"""eBay Browse API client: one seller's auctions, and single-item lookups."""
 
 from __future__ import annotations
 
 import base64
-import json
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 from urllib.parse import quote
 
 import requests
 
 from . import authguard
-from .config import Search
 from .models import Listing
 
 OAUTH_URL = "https://api.ebay.com/identity/v1/oauth2/token"
@@ -61,17 +54,6 @@ class EbayClient:
         self._token_expiry = time.time() + int(payload.get("expires_in", 7200))
         return self._token
 
-    @staticmethod
-    def _build_filter(search: Search) -> str:
-        parts = ["buyingOptions:{" + "|".join(search.buying_options) + "}"]
-        if getattr(search, "condition_ids", None):
-            ids = "|".join(str(c) for c in search.condition_ids)
-            parts.append("conditionIds:{" + ids + "}")
-        if search.max_price and search.max_price > 0:
-            parts.append(f"price:[..{search.max_price}]")
-            parts.append("priceCurrency:USD")
-        return ",".join(parts)
-
     def _headers(self) -> dict:
         headers = {
             "Authorization": f"Bearer {self._get_token()}",
@@ -81,22 +63,6 @@ class EbayClient:
             loc = quote(f"country={self.buyer_country},zip={self.buyer_postal_code}", safe="")
             headers["X-EBAY-C-ENDUSERCTX"] = f"contextualLocation={loc}"
         return headers
-
-    def search(self, search: Search) -> list[Listing]:
-        headers = self._headers()
-        params = {
-            "q": search.query,
-            "filter": self._build_filter(search),
-            # default sort = Best Match: the best currently-active listings, so the
-            # browse tabs stay full (not just whatever was posted in the last 30 min).
-            "limit": 50,
-        }
-        category = getattr(search, "category_ids", "") or WRISTWATCH_CATEGORY
-        if category:
-            params["category_ids"] = category
-        resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=30)
-        resp.raise_for_status()
-        return self._parse(resp.json(), search.name)
 
     def seller_auctions(self, seller: str, category: str = WRISTWATCH_CATEGORY,
                         max_pages: int = 3) -> list[Listing]:
@@ -145,34 +111,6 @@ class EbayClient:
         )
         resp.raise_for_status()
         return resp.json()
-
-    def enrich(self, listing: Listing) -> Listing:
-        """Pull item specifics (size, movement, box/papers, …) for a candidate."""
-        try:
-            d = self.get_item(listing.item_id)
-        except Exception:
-            return listing
-        listing.aspects = {a.get("name"): a.get("value")
-                           for a in d.get("localizedAspects", []) if a.get("name")}
-        shipping_cost, shipping_known, import_charges, import_known = self._shipping_amounts(d)
-        if shipping_known:
-            listing.shipping_cost = shipping_cost
-            listing.shipping_known = True
-        if import_known:
-            listing.import_charges = import_charges
-            listing.import_charges_known = True
-        # qualifiedPrograms is the authority on Authenticity Guarantee — not a
-        # price threshold, which moves by category and eBay has changed before.
-        verdict = authguard.classify(d)
-        listing.auth_guarantee = verdict["has_authenticity_guarantee"]
-        listing.condition_id = verdict["condition_id"]
-        listing.description_indicates_as_is = verdict["description_indicates_as_is"]
-        listing.auth_arbitrage_class = verdict["auth_arbitrage_class"]
-        listing.as_is_terms = verdict["as_is_terms"]
-        if verdict["condition"]:
-            listing.condition = verdict["condition"]
-        listing.active, listing.item_end_date, listing.inactive_reason = self._availability(d)
-        return listing
 
     @staticmethod
     def _money_value(money: dict | None) -> float:
@@ -245,7 +183,7 @@ class EbayClient:
             # Search hands back qualifiedPrograms and conditionId on every
             # summary, so whether eBay authenticates this watch is known now,
             # for nothing. The description is not in a search response, so the
-            # arbitrage read stays AG_UNKNOWN until enrich() reads the prose.
+            # arbitrage read stays AG_UNKNOWN until a getItem reads the prose.
             verdict = authguard.classify(item)
             listings.append(
                 Listing(
@@ -279,20 +217,3 @@ class EbayClient:
                 )
             )
         return listings
-
-
-class SampleEbayClient:
-    """Offline stand-in: returns canned listings so the pipeline runs without keys."""
-
-    def __init__(self, sample_path: str | Path | None = None):
-        if sample_path is None:
-            sample_path = Path(__file__).parent / "sample_listings.json"
-        self.sample_path = Path(sample_path)
-
-    def search(self, search: Search) -> list[Listing]:
-        data = json.loads(self.sample_path.read_text(encoding="utf-8"))
-        items = data.get(search.name, [])
-        return [Listing(search_name=search.name, **item) for item in items]
-
-    def enrich(self, listing: Listing) -> Listing:  # no aspects in dry-run
-        return listing

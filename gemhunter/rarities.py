@@ -54,8 +54,8 @@ BLOCKED_BRANDS = [
 # Word boundaries, or "rado" hits Colorado and "mido" hits any stray substring.
 _BLOCKED_RE = re.compile(
     r"\b(?:" + "|".join(re.escape(b) for b in BLOCKED_BRANDS) + r")\b", re.I)
-# One exception to the block list: the Tempograf is on his rare-watch radar in
-# knowledge.RARE_TARGETS, so a Movado that happens to be one still gets through.
+# One exception to the block list: the Tempograf is on his rare-watch radar,
+# so a Movado that happens to be one still gets through.
 _BLOCK_EXEMPT_RE = re.compile(r"(?i)tempo\s*-?\s*graf")
 
 BLOCKED_WORDS = ["quartz", "ladies", "lady's", "ladys", "women's", "womens",

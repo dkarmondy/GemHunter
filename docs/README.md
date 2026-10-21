@@ -1,7 +1,12 @@
 # GemHunter docs — the ranking brain
 
-These docs ARE the product's edge: my watch knowledge, structured so the scout can
+These docs ARE the product's edge: my watch knowledge, structured so software can
 rank listings the way I would. See the [mission](../README.md) for the big picture.
+
+> The scout that executed most of this (saved searches → scorer → ranked feed)
+> was retired on 2026-10-21. Today the National Rarities ranking
+> (`gemhunter/rarities.py`, `gemhunter/knowledge.py`) is what draws on these docs.
+> The scorer and the roadmap below are in git history if the scout comes back.
 
 **Design axiom:** taste is the gate, undervaluation is the multiplier. A listing must
 pass "do I know/love this?" before "is it a deal?" boosts it. The 3 gem modes

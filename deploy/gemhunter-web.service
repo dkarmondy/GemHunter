@@ -6,7 +6,7 @@ After=network-online.target
 Type=simple
 User=dkarm
 WorkingDirectory=/home/dkarm/Projects/GemHunter
-ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.webapp --db /mnt/ssd/gemhunter/gemhunter.db --host 0.0.0.0 --port 8080
+ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.webapp --db /home/dkarm/Projects/GemHunter/data/gemhunter.db --host 0.0.0.0 --port 8080
 Restart=on-failure
 RestartSec=30
 
