@@ -15,6 +15,11 @@ defaults:
   include_parts_default: false
   international_default: false
   home_country: US
+  # Rolex: the bracelet is part of the watch. A listing on a strap with no
+  # bracelet loses half its condition points. Set false for brands where
+  # the bracelet is secondary.
+  bracelet_primary: true
+  bracelet_cost: 3000          # added to the price of a no-bracelet listing
   warranty_years: 5
   negotiable_days: 30          # listed this long and still up → "negotiable?"
   ttl_minutes: 15              # search cache; reopening the tab costs nothing

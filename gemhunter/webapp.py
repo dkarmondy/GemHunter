@@ -1875,6 +1875,8 @@ function badges(i, p){
   var s = i.signals || {};
   if (s.full_set) b.push('<span class="fl good">Full set</span>');
   if (i.top_rated) b.push('<span class="fl ag">Top Rated Plus</span>');
+  if (s.bracelet && s.bracelet.status === 'confirmed') b.push('<span class="fl good">Bracelet</span>');
+  if (s.bracelet && s.bracelet.status === 'missing') b.push('<span class="fl bad">No bracelet</span>');
   if (s.card) b.push('<span class="fl warn">Card ' + (s.card.month ? s.card.month + '/' : '') + s.card.year + '</span>');
   if (s.warranty_months != null) {
     var m = s.warranty_months;
@@ -1895,6 +1897,7 @@ function badges(i, p){
 function evidence(i){
   var s = i.signals || {}, rows = [];
   if (s.card) rows.push(['card date · ' + s.card.where, s.card.snippet]);
+  if (s.bracelet && s.bracelet.snippet) rows.push([s.bracelet.label + ' · ' + s.bracelet.where, s.bracelet.snippet]);
   (s.full_set_evidence || []).forEach(function(e){ rows.push(['full set · ' + e.where, e.snippet]); });
   (s.positive || []).concat(s.negative || []).forEach(function(e){ rows.push([e.label + ' · ' + e.where, e.snippet]); });
   if (i.as_is_excerpt) rows.push(['as-is wording', i.as_is_excerpt]);

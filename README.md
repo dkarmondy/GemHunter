@@ -75,6 +75,7 @@ load, so a new preset shows up in the tab's dropdown after the Pi's next
 | `benchmark_low`, `benchmark_high` | Market range. Price points are full at or under `low` and zero at or over `high`. |
 | `deal_floor` | Under this, the card gets "Deal OR suspicious". |
 | `min_card_year`, `max_card_year` | Years accepted as a warranty-card date. |
+| `bracelet_primary`, `bracelet_cost` | On (Rolex default): a listing on a strap with no bracelet loses half its Condition points, and `bracelet_cost` is added to its price before the market comparison. A strap *plus* the bracelet is fine. Set `bracelet_primary: false` for brands where the bracelet is secondary. |
 | `weights` *(optional)* | Override any of `defaults.weights` for this preset. `seller` is feedback count (log scale, 10,000 = full) × rating (97% → 0, 100% → full), plus 15% for Top Rated Plus. |
 
 Anything in `defaults` (category, brand, conditions, warranty years,

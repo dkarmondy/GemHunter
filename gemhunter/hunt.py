@@ -173,10 +173,54 @@ def _months_between(a: date, b: date) -> int:
     return (b.year - a.year) * 12 + (b.month - a.month)
 
 
+# Bracelet vs strap. For a Rolex the bracelet is half of what is being bought,
+# so a watch that comes on a strap with no bracelet in sight is a lesser watch.
+# A strap *as well as* the bracelet is fine.
+BRACELET_MISSING_RE = re.compile(
+    r"(?i)\bno\s+(?:original\s+)?(?:bracelet|band)\b"
+    r"|\bwithout\s+(?:the\s+|its\s+|an?\s+)?(?:original\s+)?(?:bracelet|band)\b"
+    r"|\b(?:bracelet|band)\s+(?:is\s+)?not\s+included\b"
+    r"|\bmissing\s+(?:the\s+)?(?:original\s+)?bracelet\b"
+    r"|\b(?:watch\s+)?head\s+only\b|\bwatch\s+head\b")
+BRACELET_RE = re.compile(r"(?i)\b(?:oyster\s+)?bracelet\b")
+STRAP_RE = re.compile(
+    r"(?i)\b(?:rubber|leather|nato|fabric|canvas|silicone|aftermarket|everest|"
+    r"oysterflex|oyster\s+flex|custom)\s+(?:watch\s+)?(?:strap|band)\b|\bon\s+(?:a\s+)?strap\b"
+    r"|\bstrap\b|\b(?:rubber|leather|nato|oysterflex)\b")
+STEEL_BAND_RE = re.compile(r"(?i)stainless|oystersteel|\bsteel\b|bracelet")
+
+
+def bracelet_status(texts: list[tuple[str, str]], aspects: dict) -> dict:
+    """{'status': confirmed|missing|unknown, 'label', 'where', 'snippet'}."""
+    for where, text in texts:
+        m = BRACELET_MISSING_RE.search(text)
+        if m:
+            return {"status": "missing", "label": "no bracelet", "where": where,
+                    "snippet": _snippet(text, m.start(), m.end())}
+    for where, text in texts:
+        for m in BRACELET_RE.finditer(text):
+            if not _negated(text, m.start()):
+                return {"status": "confirmed", "label": "bracelet", "where": where,
+                        "snippet": _snippet(text, m.start(), m.end())}
+    for k, v in aspects.items():
+        if re.search(r"(?i)band|strap|bracelet", k or "") and STEEL_BAND_RE.search(str(v)):
+            return {"status": "confirmed", "label": "bracelet", "where": "item specifics",
+                    "snippet": f"{k}: {v}"}
+    for where, text in texts:
+        m = STRAP_RE.search(text)
+        if m:
+            return {"status": "missing", "label": "strap, no bracelet mentioned",
+                    "where": where, "snippet": _snippet(text, m.start(), m.end())}
+    return {"status": "unknown", "label": "", "where": "", "snippet": ""}
+
+
 def parse_signals(title: str, description: str, aspects: dict, preset: dict) -> dict:
     texts = [("title", title or ""), ("description", description or "")]
     out: dict = {"card": None, "warranty_months": None, "full_set": False,
-                 "full_set_evidence": [], "positive": [], "negative": []}
+                 "full_set_evidence": [], "positive": [], "negative": [],
+                 "bracelet": None}
+    if preset.get("bracelet_primary"):
+        out["bracelet"] = bracelet_status(texts, aspects)
 
     card = _card_date(texts, preset)
     if card:
@@ -226,18 +270,29 @@ CONDITION_GRADE = {1000: 1.0, 1500: 0.9, 1750: 0.6, 2990: 0.7, 3000: 0.5,
                    3010: 0.25, 7000: 0.0}
 
 
+# Off a strap with no bracelet is worse than a polished case: half the
+# condition points go. Only applies where the preset sets bracelet_primary.
+BRACELET_MISSING_PENALTY = 0.5
+
+
 def condition_fraction(item: dict) -> tuple[float, str]:
     """0–1: the listing's grade, lifted by unworn/unpolished, cut by polished."""
     sig = item.get("signals") or {}
     grade = CONDITION_GRADE.get(item.get("condition_id"), 0.4)
     pos = [s["label"] for s in sig.get("positive") or []]
     neg = [s["label"] for s in sig.get("negative") or []]
-    frac = grade + (0.3 if pos else 0) - (0.4 if neg else 0)
+    br = (sig.get("bracelet") or {}).get("status")
+    frac = (grade + (0.3 if pos else 0) - (0.4 if neg else 0)
+            - (BRACELET_MISSING_PENALTY if br == "missing" else 0))
     bits = [item.get("condition") or "condition unknown"]
     if pos:
         bits.append("+ " + ", ".join(pos))
     if neg:
         bits.append("− " + ", ".join(neg))
+    if br == "missing":
+        bits.append("− no bracelet")
+    elif br == "confirmed":
+        bits.append("+ bracelet")
     return max(0.0, min(1.0, frac)), " ".join(bits)
 
 
@@ -265,6 +320,10 @@ def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
     w = preset["weights"]
     parts: list[dict] = []
     total_price = item["price"] + (item["shipping"] or 0)
+    # No bracelet means buying one: priced in before the market comparison.
+    missing_bracelet = ((item.get("signals") or {}).get("bracelet") or {}).get("status") == "missing"
+    bracelet_cost = float(preset.get("bracelet_cost") or 0) if missing_bracelet else 0.0
+    total_price += bracelet_cost
     lo, hi = float(preset["benchmark_low"]), float(preset["benchmark_high"])
     if total_price <= lo:
         frac = 1.0
@@ -273,6 +332,8 @@ def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
     else:
         frac = (hi - total_price) / (hi - lo)
     note = f"${total_price:,.0f} vs ${lo:,.0f}–${hi:,.0f}"
+    if bracelet_cost:
+        note += f" (incl. ${bracelet_cost:,.0f} for a bracelet)"
     if total_price < float(preset["deal_floor"]):
         note += " · under the deal floor: deal OR suspicious"
     parts.append({"label": "Price vs market", "pts": w.get("price", 0) * frac, "note": note})
