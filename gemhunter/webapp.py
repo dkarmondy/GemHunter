@@ -573,7 +573,7 @@ APPS = [
      "path": "/item", "blurb": "Paste an eBay listing, get live JSON back."},
     {"id": "rarities", "name": "National Rarities", "icon": "&#127963;", "where": "local",
      "path": "/rarities", "blurb": "The turnaroundrarities weekly drop, ranked to your taste."},
-    {"id": "hunt", "name": "Reference Hunt", "icon": "&#127919;", "where": "local",
+    {"id": "hunt", "name": "Reference Hunt", "icon": "&#128081;", "where": "local",
      "path": "/hunt", "blurb": "One exact reference across eBay, scored — Sub 126610LN first."},
     {"id": "search", "name": "Quick search", "icon": "&#9889;", "where": "hub",
      "path": "/search", "blurb": "Live eBay search, any query, newest first."},
