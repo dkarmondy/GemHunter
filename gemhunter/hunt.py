@@ -221,6 +221,26 @@ def parse_signals(title: str, description: str, aspects: dict, preset: dict) -> 
 # Scoring
 # ---------------------------------------------------------------------------
 
+# eBay's condition grade, as a starting point before the description speaks.
+CONDITION_GRADE = {1000: 1.0, 1500: 0.9, 1750: 0.6, 2990: 0.7, 3000: 0.5,
+                   3010: 0.25, 7000: 0.0}
+
+
+def condition_fraction(item: dict) -> tuple[float, str]:
+    """0–1: the listing's grade, lifted by unworn/unpolished, cut by polished."""
+    sig = item.get("signals") or {}
+    grade = CONDITION_GRADE.get(item.get("condition_id"), 0.4)
+    pos = [s["label"] for s in sig.get("positive") or []]
+    neg = [s["label"] for s in sig.get("negative") or []]
+    frac = grade + (0.3 if pos else 0) - (0.4 if neg else 0)
+    bits = [item.get("condition") or "condition unknown"]
+    if pos:
+        bits.append("+ " + ", ".join(pos))
+    if neg:
+        bits.append("− " + ", ".join(neg))
+    return max(0.0, min(1.0, frac)), " ".join(bits)
+
+
 def seller_points(item: dict, weight: float) -> tuple[float, str]:
     """Volume and rating multiplied, so a seller needs both to score.
 
@@ -265,20 +285,18 @@ def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
                   "note": (f"{months // 12}y {months % 12}m" if months is not None
                            else "no card date found" if item.get("detail") else
                            "description not read yet")})
-    parts.append({"label": "Full set", "pts": w.get("full_set", 0) if sig.get("full_set") else 0,
-                  "note": "box & papers" if sig.get("full_set") else "not stated"})
-    pos = [s["label"] for s in sig.get("positive") or []]
-    neg = [s["label"] for s in sig.get("negative") or []]
-    parts.append({"label": "Unpolished / unworn", "pts": w.get("unpolished", 0) if pos else 0,
-                  "note": ", ".join(pos) or "not stated"})
-    if neg:
-        parts.append({"label": "Polished / not original", "pts": w.get("polished", 0),
-                      "note": ", ".join(neg)})
+    parts.append({"label": "Box & papers", "pts": w.get("full_set", 0) if sig.get("full_set") else 0,
+                  "note": "full set" if sig.get("full_set") else "not stated"})
+    cfrac, cnote = condition_fraction(item)
+    parts.append({"label": "Condition", "pts": w.get("condition", 0) * cfrac, "note": cnote})
     parts.append({"label": "Authenticity Guarantee",
                   "pts": w.get("ag", 0) if item.get("ag") else 0,
                   "note": "eligible" if item.get("ag") else "not eligible"})
     sp, snote = seller_points(item, w.get("seller", 0))
     parts.append({"label": "Seller", "pts": sp, "note": snote})
+    order = ["Price vs market", "Condition", "Box & papers", "Seller",
+             "Warranty left", "Authenticity Guarantee"]
+    parts.sort(key=lambda p: order.index(p["label"]))
     for p in parts:
         p["pts"] = round(p["pts"], 1)
     return round(sum(p["pts"] for p in parts), 1), parts

@@ -19,14 +19,15 @@ defaults:
   negotiable_days: 30          # listed this long and still up → "negotiable?"
   ttl_minutes: 15              # search cache; reopening the tab costs nothing
   detail_top: 80               # getItem the best N for description parsing
-  weights:                     # max points each factor can add (or take away)
-    price: 30
-    warranty: 20
-    full_set: 15
-    unpolished: 10
-    polished: -10
-    ag: 10
-    seller: 20                 # feedback count × rating, + Top Rated Plus
+  # Max points per factor, in priority order: price, condition, box &
+  # papers, seller, then the rest. Total possible = 100.
+  weights:
+    price: 35
+    condition: 25              # eBay grade + unworn/unpolished − polished
+    full_set: 18
+    seller: 12                 # feedback count × rating, + Top Rated Plus
+    warranty: 6
+    ag: 4
   # Junk that is never the watch itself.
   exclude_common:
     # "Watch and papers only" is the watch, so the "X only" rules skip it.
@@ -67,7 +68,7 @@ presets:
     price_min: 7000
     price_max: 14000
     benchmark_low: 9800        # market band; at or under this = full price points
-    benchmark_high: 13000      # at or over this = no price points
+    benchmark_high: 14000      # at or over this = no price points (asks cluster $12.5k–14k)
     deal_floor: 8500           # below this = "deal OR suspicious"
     min_card_year: 2020
     max_card_year: 2026
