@@ -21,6 +21,7 @@ from urllib.parse import parse_qs, urlparse
 import requests
 
 from . import authguard
+from . import hunt
 from .authguard import strip_html as _strip_html
 from .config import load_config
 from .ebay import EbayClient
@@ -50,6 +51,14 @@ def _now_str() -> str:
     hour12 = now.hour % 12 or 12
     ampm = "AM" if now.hour < 12 else "PM"
     return f"{now.month}/{now.day}/{now.year} {hour12}:{now.minute:02d} {ampm} {now.strftime('%Z')}"
+
+
+def _ts_str(ts: float) -> str:
+    """A unix time in the same shape as _now_str (Mountain time)."""
+    dt = datetime.fromtimestamp(ts, MOUNTAIN) if MOUNTAIN else datetime.fromtimestamp(ts).astimezone()
+    hour12 = dt.hour % 12 or 12
+    ampm = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.month}/{dt.day}/{dt.year} {hour12}:{dt.minute:02d} {ampm} {dt.strftime('%Z')}"
 
 
 def _tokens(text: str) -> set[str]:
@@ -564,6 +573,8 @@ APPS = [
      "path": "/item", "blurb": "Paste an eBay listing, get live JSON back."},
     {"id": "rarities", "name": "National Rarities", "icon": "&#127963;", "where": "local",
      "path": "/rarities", "blurb": "The turnaroundrarities weekly drop, ranked to your taste."},
+    {"id": "hunt", "name": "Reference Hunt", "icon": "&#127919;", "where": "local",
+     "path": "/hunt", "blurb": "One exact reference across eBay, scored — Sub 126610LN first."},
     {"id": "search", "name": "Quick search", "icon": "&#9889;", "where": "hub",
      "path": "/search", "blurb": "Live eBay search, any query, newest first."},
     {"id": "lathe", "name": "Lathe outfits", "icon": "&#128296;", "where": "hub",
@@ -1714,6 +1725,270 @@ load(false);
 """
 
 
+# ---------------------------------------------------------------------------
+# Reference Hunt: one exact reference, every seller, scored. The presets live
+# in presets/hunts.yaml; this page only renders what /api/hunt hands it, and
+# does its filtering and sorting in the browser — the list is never more than
+# a couple of hundred cards, and toggling must not cost an eBay call.
+# ---------------------------------------------------------------------------
+
+HUNT_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#08111f"><title>Reference Hunt</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:560px;margin:0 auto;
+ padding:16px 14px calc(84px + env(safe-area-inset-bottom,0px))}
+h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.sub{color:#8ba0bd;font-size:13px;margin:0 0 6px}
+.refresh{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);
+ color:#e9eef6;width:44px;height:44px;border-radius:14px;font-size:20px;font-weight:800;
+ flex:none;display:grid;place-items:center}
+.refresh:disabled{opacity:.5}
+.status{font-size:12px;color:#8ba0bd;min-height:17px;margin:8px 0}
+.picks{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 2px}
+.picks select{font:inherit;font-size:12px;font-weight:700;color:#c9d6e8;
+ background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 8px}
+.filt{font:inherit;font-size:12px;font-weight:700;color:#8ba0bd;
+ background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 11px}
+.filt.on{color:#7dd3fc;border-color:rgba(125,211,252,.5);background:rgba(125,211,252,.1)}
+.card{background:#0f1c30;border:1px solid #1d2f4c;border-radius:16px;
+ margin-top:14px;overflow:hidden}
+.card.parts{border-color:rgba(255,77,61,.4)}
+.shot{display:block;width:100%;min-height:200px;background:#0b1526;object-fit:cover}
+.pic{position:relative;display:block}
+.score{position:absolute;top:9px;right:9px;border:0;border-radius:13px;
+ background:rgba(8,17,31,.72);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+ color:#f0d67a;font:inherit;font-size:20px;font-weight:900;padding:6px 11px;line-height:1}
+.score small{display:block;font-size:10px;font-weight:700;color:#8ba0bd;letter-spacing:.4px}
+.info{padding:11px 13px 13px}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.bid{font-size:24px;font-weight:800;color:#f0d67a}
+.bid small{font-size:12px;font-weight:600;color:#8ba0bd;margin-left:6px}
+.run{text-align:right;font-size:13px;font-weight:700;color:#7dd3fc}
+.run .left{display:block;font-size:12px;font-weight:600;color:#8ba0bd}
+.t{margin:7px 0 0;color:#c9d6e8;font-size:13px;line-height:1.35}
+.meta{margin-top:6px;font-size:12px;color:#8ba0bd}
+.flags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.fl{font-size:11px;font-weight:800;letter-spacing:.4px;border-radius:7px;
+ padding:3px 8px;border:1px solid}
+.fl.bad{color:#ff5b48;border-color:#ff4d3d;background:rgba(255,77,61,.13)}
+.fl.warn{color:#fbbf24;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
+.fl.good{color:#4ade80;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
+.fl.ag{color:#d3e1ff;border-color:rgba(54,101,243,.6);background:rgba(54,101,243,.16)}
+.fl.gold{color:#ffe9a3;border-color:#f0d67a;background:rgba(240,214,122,.16)}
+.fl.dim{color:#8ba0bd;border-color:#23395c}
+.bd{display:none;margin-top:10px;padding:9px 11px;background:#0b1526;
+ border-left:3px solid #c9a227;border-radius:0 10px 10px 0;font-size:12px}
+.bd.on{display:block}
+.bd div{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.bd b{font-variant-numeric:tabular-nums}
+.bd .neg{color:#ff6b5c}.bd .note{color:#8ba0bd;font-weight:400}
+details{margin-top:9px;font-size:12px;color:#c9d6e8}
+summary{color:#8ba0bd;font-weight:700;cursor:pointer}
+.ev{margin:5px 0 0;padding:6px 9px;background:#0b1526;border-radius:8px;line-height:1.35}
+.ev em{color:#8ba0bd;font-style:normal;font-size:11px;font-weight:700;margin-right:5px}
+.err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
+ border-radius:11px;margin-top:16px;font-size:14px}
+.ex{margin-top:20px;color:#8ba0bd}
+.ex li{margin:3px 0}
+.fab{position:fixed;left:12px;z-index:50;display:flex;gap:9px;
+ bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+.fab a,.fab button{width:48px;height:48px;border-radius:50%;padding:0;
+ display:grid;place-items:center;font-size:21px;font-weight:800;
+ color:#e9eef6;text-decoration:none;background:rgba(15,28,48,.92);
+ border:1px solid #23395c;box-shadow:0 8px 22px rgba(0,0,0,.45)}
+</style></head><body>
+<div class="head">
+  <div>
+    <h1><a href="/">&larr;</a> &nbsp;Reference Hunt</h1>
+    <p class="sub" id="sub">One reference, every seller, scored.</p>
+  </div>
+  <button class="refresh" id="refreshBtn" onclick="load(true)"
+          aria-label="Refresh from eBay">&#8635;</button>
+</div>
+<div class="picks">
+  <select id="preset" onchange="switchPreset()"></select>
+  <select id="sort" onchange="render()">
+    <option value="score">Sort: score</option>
+    <option value="price">Sort: price</option>
+    <option value="newest">Sort: newest</option>
+  </select>
+</div>
+<div class="picks" id="toggles">
+  <button class="filt" id="tPreowned" onclick="flip('preowned')">Pre-owned</button>
+  <button class="filt" id="tNew" onclick="flip('new')">New / New other</button>
+  <button class="filt" id="tParts" onclick="flip('parts')">For parts</button>
+  <button class="filt" id="tIntl" onclick="flip('intl')">International</button>
+</div>
+<div class="status" id="status"></div>
+<div id="out"></div>
+<div id="foot"></div>
+<div class="fab">
+  <a href="/" aria-label="Back to dashboard">&larr;</a>
+  <button type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})"
+          aria-label="Back to top">&uarr;</button>
+</div>
+<script>
+var DATA = null, POLLS = 0, POLL_T = null;
+var qs = new URLSearchParams(location.search);
+var PRESET = qs.get('preset') || localStorage.getItem('hunt.preset') || '';
+var SHOW = {preowned: true, 'new': true, parts: false, intl: false};
+var OPEN = {};
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
+  function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function money(v){ return '$' + Math.round(v).toLocaleString(); }
+
+function paintToggles(){
+  [['preowned','tPreowned'],['new','tNew'],['parts','tParts'],['intl','tIntl']]
+    .forEach(function(p){ document.getElementById(p[1]).className = 'filt' + (SHOW[p[0]] ? ' on' : ''); });
+}
+function flip(k){ SHOW[k] = !SHOW[k]; paintToggles(); render(); }
+function switchPreset(){
+  PRESET = document.getElementById('preset').value;
+  localStorage.setItem('hunt.preset', PRESET);
+  DATA = null; OPEN = {}; load(false, true);
+}
+function toggleBd(id){ OPEN[id] = !OPEN[id];
+  var el = document.getElementById('bd-' + id); if (el) el.className = 'bd' + (OPEN[id] ? ' on' : ''); }
+
+function visible(i){
+  if (i.parts) return SHOW.parts;
+  if (i.international && !SHOW.intl) return false;
+  var cid = i.condition_id;
+  if (cid >= 1000 && cid < 2000) return SHOW['new'];   // 1000 / 1500 / 1750
+  return SHOW.preowned;          // 2990 / 3000 / 3010 grades, or unknown
+}
+
+function badges(i, p){
+  var b = [];
+  if (i.ag) b.push(i.auth_class === 'AG_ARBITRAGE'
+      ? '<span class="fl gold" title="Listed pre-owned, so eBay still authenticates it — but the description reads as-is">AG &#10003; · as-is wording</span>'
+      : '<span class="fl ag">Authenticity Guarantee</span>');
+  else if (i.condition_id === 7000)
+    b.push('<span class="fl bad" title="Listings coded For parts are excluded from AG">For parts · no AG</span>');
+  else b.push('<span class="fl dim">No AG</span>');
+  var s = i.signals || {};
+  if (s.full_set) b.push('<span class="fl good">Full set</span>');
+  if (s.card) b.push('<span class="fl warn">Card ' + (s.card.month ? s.card.month + '/' : '') + s.card.year + '</span>');
+  if (s.warranty_months != null) {
+    var m = s.warranty_months;
+    b.push('<span class="fl ' + (m > 0 ? 'good' : 'dim') + '">' + (m > 0
+      ? 'Warranty ' + (s.card.approx ? '~' : '') + Math.floor(m/12) + 'y ' + (m%12) + 'm'
+      : 'Warranty expired') + '</span>');
+  }
+  (s.positive || []).forEach(function(x){ b.push('<span class="fl good">' + esc(x.label) + '</span>'); });
+  (s.negative || []).forEach(function(x){ b.push('<span class="fl bad">' + esc(x.label) + '</span>'); });
+  if (i.deal_or_suspicious) b.push('<span class="fl gold" title="Under ' + money(p.deal_floor) + ' — check it hard">Deal OR suspicious</span>');
+  if (i.negotiable) b.push('<span class="fl warn">' + i.run_days + 'd up · negotiable?</span>');
+  if (i.parts && i.condition_id !== 7000) b.push('<span class="fl bad">Parts in title</span>');
+  if (i.international) b.push('<span class="fl dim">' + esc(i.country) + '</span>');
+  if (!i.detail) b.push('<span class="fl dim">description not read yet</span>');
+  return b.join('');
+}
+
+function evidence(i){
+  var s = i.signals || {}, rows = [];
+  if (s.card) rows.push(['card date · ' + s.card.where, s.card.snippet]);
+  (s.full_set_evidence || []).forEach(function(e){ rows.push(['full set · ' + e.where, e.snippet]); });
+  (s.positive || []).concat(s.negative || []).forEach(function(e){ rows.push([e.label + ' · ' + e.where, e.snippet]); });
+  if (i.as_is_excerpt) rows.push(['as-is wording', i.as_is_excerpt]);
+  if (!rows.length) return '';
+  return '<details><summary>What was detected (' + rows.length + ')</summary>'
+    + rows.map(function(r){ return '<div class="ev"><em>' + esc(r[0]) + '</em>' + esc(r[1]) + '</div>'; }).join('')
+    + '</details>';
+}
+
+function card(i, p){
+  var title = i.breakdown.map(function(x){ return x.label + ': ' + x.pts + ' (' + x.note + ')'; }).join('&#10;');
+  var bd = i.breakdown.map(function(x){
+    return '<div><span>' + esc(x.label) + ' <span class="note">· ' + esc(x.note) + '</span></span><b'
+      + (x.pts < 0 ? ' class="neg"' : '') + '>' + (x.pts > 0 ? '+' : '') + x.pts + '</b></div>';
+  }).join('');
+  var listed = i.listed ? i.listed.slice(0, 10) : '?';
+  var status = i.availability === 'OUT_OF_STOCK' ? 'Sold out'
+    : (i.sold_qty ? 'Active · ' + i.sold_qty + ' sold' : 'Active · unsold');
+  var ship = i.shipping == null ? '' : (i.shipping ? ' + ' + money(i.shipping) + ' ship' : ' · free ship');
+  return '<div class="card' + (i.parts ? ' parts' : '') + '">'
+    + '<div class="pic"><a href="' + esc(i.url) + '" target="_blank" rel="noopener">'
+    + (i.image ? '<img class="shot" loading="lazy" src="' + esc(i.image) + '" alt="">' : '<div class="shot"></div>')
+    + '</a><button class="score" title="' + title + '" onclick="toggleBd(\\'' + esc(i.id) + '\\')">'
+    + i.score + '<small>SCORE</small></button></div>'
+    + '<div class="info"><div class="row"><div class="bid">' + money(i.price)
+    + '<small>' + (i.is_auction ? (i.bids || 0) + ' bids' : (i.buying.indexOf('BEST_OFFER') >= 0 ? 'BIN · offers' : 'BIN')) + ship + '</small></div>'
+    + '<div class="run">' + (i.run_days == null ? '' : i.run_days + 'd run') + '<span class="left">' + esc(status) + '</span></div></div>'
+    + '<p class="t"><a href="' + esc(i.url) + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">' + esc(i.title) + '</a></p>'
+    + '<div class="meta">Listed ' + esc(listed) + ' &middot; ' + (i.run_days == null ? '?' : i.run_days) + 'd run &middot; '
+    + esc(i.condition) + ' &middot; ' + esc(i.seller) + ' (' + (i.feedback_score || 0).toLocaleString() + ', ' + i.feedback_pct + '%)'
+    + (i.location ? ' &middot; ' + esc(i.location) : '') + '</div>'
+    + '<div class="flags">' + badges(i, p) + '</div>'
+    + '<div class="bd' + (OPEN[i.id] ? ' on' : '') + '" id="bd-' + esc(i.id) + '">' + bd + '</div>'
+    + evidence(i)
+    + '</div></div>';
+}
+
+function render(){
+  if (!DATA) return;
+  var p = DATA.preset, sort = document.getElementById('sort').value;
+  var items = DATA.items.filter(visible).slice();
+  if (sort === 'price') items.sort(function(a,b){ return a.price - b.price; });
+  else if (sort === 'newest') items.sort(function(a,b){ return (b.listed || '').localeCompare(a.listed || ''); });
+  else items.sort(function(a,b){ return b.score - a.score; });
+  var hidden = DATA.items.length - items.length;
+  document.getElementById('sub').innerHTML = esc(p.name) + ' &middot; ' + esc(p.blurb || '')
+    + ' &middot; ' + money(p.price_min) + '–' + money(p.price_max)
+    + ' &middot; market ' + money(p.benchmark_low) + '–' + money(p.benchmark_high);
+  document.getElementById('status').textContent = 'Last refresh ' + DATA.updated
+    + ' · ' + items.length + ' shown' + (hidden ? ', ' + hidden + ' hidden by toggles' : '')
+    + ' · ' + DATA.excluded.length + ' excluded'
+    + (DATA.details_pending ? ' · reading ' + DATA.details_pending + ' descriptions…' : '')
+    + (DATA.errors.length ? ' · ' + DATA.errors.length + ' query failed' : '');
+  document.getElementById('out').innerHTML = items.length
+    ? items.map(function(i){ return card(i, p); }).join('')
+    : '<div class="err">Nothing matches right now with these toggles.</div>';
+  document.getElementById('foot').innerHTML = DATA.excluded.length
+    ? '<details class="ex"><summary>Excluded by title (' + DATA.excluded.length + ')</summary><ul>'
+      + DATA.excluded.map(function(e){ return '<li>' + esc(e.title) + ' <em>— ' + esc(e.why) + '</em></li>'; }).join('')
+      + '</ul></details>' : '';
+}
+
+function load(fresh, reset){
+  var btn = document.getElementById('refreshBtn'), st = document.getElementById('status');
+  clearTimeout(POLL_T);
+  btn.disabled = true;
+  if (fresh || !DATA) st.textContent = fresh ? 'Searching eBay…' : 'Loading…';
+  if (reset) document.getElementById('out').innerHTML = '';
+  var url = '/api/hunt?preset=' + encodeURIComponent(PRESET) + (fresh ? '&fresh=1' : '');
+  fetch(url, {cache: 'no-store'})
+    .then(function(r){ return r.json().then(function(d){ if (!r.ok) throw d.error || ('HTTP ' + r.status); return d; }); })
+    .then(function(d){
+      var first = !DATA;
+      DATA = d; PRESET = d.preset.id;
+      if (first) { SHOW.parts = !!d.preset.include_parts_default; SHOW.intl = !!d.preset.international_default; paintToggles(); }
+      document.getElementById('preset').innerHTML = d.presets.map(function(p){
+        return '<option value="' + esc(p.id) + '"' + (p.id === PRESET ? ' selected' : '') + '>' + esc(p.name) + '</option>';
+      }).join('');
+      render();
+      if (fresh) POLLS = 0;
+      // Descriptions arrive on a background pass; ask again while it runs.
+      if (d.details_pending && POLLS++ < 20) POLL_T = setTimeout(function(){ load(false); }, 4000);
+    })
+    .catch(function(e){
+      document.getElementById('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
+      st.textContent = 'Refresh failed.';
+    })
+    .then(function(){ btn.disabled = false; });
+}
+paintToggles();
+load(false);
+</script></body></html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = "gemhunter.db"
 
@@ -1833,6 +2108,13 @@ class Handler(BaseHTTPRequestHandler):
                 "items": shown,
             })
             return
+        if parsed.path == "/hunt":
+            self._send(HTTPStatus.OK, HUNT_PAGE.encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/hunt":
+            self._api_hunt(parse_qs(parsed.query))
+            return
         if parsed.path == "/api/item":
             params = parse_qs(parsed.query)
             ref = (params.get("id", [""])[0] or params.get("url", [""])[0])
@@ -1872,6 +2154,44 @@ class Handler(BaseHTTPRequestHandler):
             })
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    def _api_hunt(self, params: dict) -> None:
+        # Re-read every time, so editing presets/hunts.yaml needs no restart.
+        try:
+            presets = hunt.load_presets()
+        except Exception as exc:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                       {"error": f"presets/hunts.yaml: {exc}"})
+            return
+        if not presets:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                       {"error": "presets/hunts.yaml has no presets"})
+            return
+        want = params.get("preset", [""])[0]
+        preset = next((p for p in presets if p["id"] == want), presets[0])
+        fresh = params.get("fresh", [""])[0] in ("1", "true", "yes")
+        try:
+            data = hunt.fetch_hunt(ebay_client(), preset, fresh)
+        except RuntimeError as exc:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            return
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else 0
+            self._json(HTTPStatus.BAD_GATEWAY, {"error": f"eBay returned HTTP {code}"})
+            return
+        except requests.RequestException as exc:
+            self._json(HTTPStatus.BAD_GATEWAY, {"error": str(exc)})
+            return
+        self._json(HTTPStatus.OK, {
+            "updated": _ts_str(data["fetched_at"]),
+            "cached_secs": data["cached_secs"],
+            "presets": [{"id": p["id"], "name": p["name"]} for p in presets],
+            "preset": hunt.public_preset(preset),
+            "details_pending": data["details_pending"],
+            "errors": data["errors"],
+            "excluded": data["excluded"],
+            "items": data["items"],
+        })
 
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or "0")
