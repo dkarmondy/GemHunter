@@ -1,0 +1,95 @@
+# Reference Hunt presets — one entry per reference the /hunt tab chases.
+# Add a new reference by copying a block and editing it; no code changes.
+# See README.md → "Reference Hunt: adding a preset" for what each key does.
+#
+# Every pattern below is a Python regular expression, matched
+# case-insensitively against the listing title.
+
+defaults:
+  category: "31387"            # Wristwatches
+  brand: Rolex                 # becomes aspect_filter Brand:{…}
+  # eBay condition ids: 1000 new, 1500 new other, 1750 new w/ defects,
+  # 3000 pre-owned, 7000 for parts or not working.
+  conditions: [1000, 1500, 1750, 3000]
+  parts_condition: 7000
+  include_parts_default: false
+  international_default: false
+  home_country: US
+  warranty_years: 5
+  negotiable_days: 30          # listed this long and still up → "negotiable?"
+  ttl_minutes: 15              # search cache; reopening the tab costs nothing
+  detail_top: 80               # getItem the best N for description parsing
+  weights:                     # max points each factor can add (or take away)
+    price: 30
+    warranty: 20
+    full_set: 15
+    unpolished: 10
+    polished: -10
+    ag: 10
+    seller: 10
+  # Junk that is never the watch itself.
+  exclude_common:
+    # "Watch and papers only" is the watch, so the "X only" rules skip it.
+    - '(?<!watch and )(?<!watch & )(?<!watch with )(?<!watch \+ )(?<!w/ )\b(box|papers) only'
+    - 'bracelet only'
+    - 'bezel (only|insert|assembly|part)'
+    - 'dial only'
+    - 'homage'
+    - 'replica'
+    - '\bstyle\b'
+    - 'aftermarket'
+  # Titles that say "parts" are not dropped: they join the condition-7000
+  # listings behind the "For parts" toggle, which is off by default.
+  parts_words:
+    - 'for parts'
+    - '\bparts\b'
+    - 'not working'
+    - 'non.?running'
+
+presets:
+  - id: "126610LN"
+    name: "Submariner Date 126610LN"
+    blurb: "Steel, black ceramic, 41mm, 2020+"
+    queries: ["126610LN", "126610 LN", "126610 submariner"]
+    require: ['126610']        # title must name the ref at all
+    exclude:
+      - '126610\s*-?\s*LV'
+      - '\bLV\b'
+      - 'kermit'
+      - 'starbucks'
+      - '116610'
+      - '126613'
+      - '126618'
+      - '126619'
+      - '124060'
+      - '114060'
+      - '\binsert\b'           # a ceramic Sub's title never needs the word
+    price_min: 7000
+    price_max: 14000
+    benchmark_low: 9800        # market band; at or under this = full price points
+    benchmark_high: 13000      # at or over this = no price points
+    deal_floor: 8500           # below this = "deal OR suspicious"
+    min_card_year: 2020
+    max_card_year: 2026
+
+  - id: "16600"
+    name: "Sea-Dweller 16600"
+    blurb: "Steel, 40mm, 1990–2008"
+    queries: ["16600 sea-dweller", "16600 sea dweller", "rolex 16600"]
+    require: ['16600']
+    exclude:
+      - '16600\d'              # 166000 etc.
+      - '16660'
+      - '126600'
+      - '116600'
+      - '126660'
+      - '\bdeepsea\b'
+    price_min: 6000
+    price_max: 14000
+    benchmark_low: 8500
+    benchmark_high: 11500
+    deal_floor: 7000
+    # Discontinued 2008, so no card can still be under warranty — the year is
+    # shown as provenance only.
+    min_card_year: 1990
+    max_card_year: 2009

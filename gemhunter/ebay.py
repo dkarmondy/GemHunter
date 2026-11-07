@@ -91,6 +91,36 @@ class EbayClient:
                 break
         return listings
 
+    def search_summaries(self, query: str, category: str = WRISTWATCH_CATEGORY,
+                         filters: list[str] | None = None, aspect_filter: str = "",
+                         max_pages: int = 2) -> list[dict]:
+        """Raw itemSummaries for one keyword search, newest first.
+
+        Reference Hunt reads fields `_parse` drops (itemCreationDate,
+        conditionId alongside qualifiedPrograms, …), so it gets the payload.
+        """
+        headers = self._headers()
+        out: list[dict] = []
+        for page in range(max_pages):
+            params = {
+                "q": query,
+                "category_ids": category,
+                "sort": "newlyListed",
+                "limit": 200,
+                "offset": page * 200,
+            }
+            if filters:
+                params["filter"] = ",".join(filters)
+            if aspect_filter:
+                params["aspect_filter"] = aspect_filter
+            resp = requests.get(BROWSE_URL, headers=headers, params=params, timeout=30)
+            resp.raise_for_status()
+            batch = resp.json().get("itemSummaries", []) or []
+            out.extend(batch)
+            if len(batch) < 200:
+                break
+        return out
+
     def get_item(self, item_id: str) -> dict:
         headers = self._headers()
         resp = requests.get(ITEM_URL + item_id, headers=headers, timeout=30)
