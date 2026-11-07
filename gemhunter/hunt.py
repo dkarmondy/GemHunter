@@ -221,6 +221,26 @@ def parse_signals(title: str, description: str, aspects: dict, preset: dict) -> 
 # Scoring
 # ---------------------------------------------------------------------------
 
+def seller_points(item: dict, weight: float) -> tuple[float, str]:
+    """Volume and rating multiplied, so a seller needs both to score.
+
+    eBay's feedback score is the count of rated sales, the nearest thing the
+    Browse API gives to "how much has this seller sold". It is read on a log
+    scale: 10 ratings ≈ a quarter, 100 half, 1,000 three quarters, 10,000 all.
+    The rating gates it: 100% keeps all of it, 99% two thirds, 98% a third,
+    97% and under nothing, however big the seller. Top Rated Plus on the
+    listing adds the last 15%.
+    """
+    fb = item.get("feedback_score") or 0
+    pct = item.get("feedback_pct") or 0
+    volume = min(1.0, math.log10(fb + 1) / 4)
+    rating = max(0.0, min(1.0, (pct - 97) / 3))
+    top = 1.0 if item.get("top_rated") else 0.0
+    pts = weight * (0.85 * volume * rating + 0.15 * top)
+    note = f"{fb:,} ratings · {pct:g}%" + (" · Top Rated Plus" if top else "")
+    return pts, note
+
+
 def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
     w = preset["weights"]
     parts: list[dict] = []
@@ -257,11 +277,8 @@ def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
     parts.append({"label": "Authenticity Guarantee",
                   "pts": w.get("ag", 0) if item.get("ag") else 0,
                   "note": "eligible" if item.get("ag") else "not eligible"})
-    fb, pct = item.get("feedback_score") or 0, item.get("feedback_pct") or 0
-    count_frac = min(1.0, math.log10(fb + 1) / 3)          # 1,000 ratings = full
-    pct_frac = max(0.0, min(1.0, (pct - 97) / 3))           # 97% → 0, 100% → 1
-    parts.append({"label": "Seller", "pts": w.get("seller", 0) * (count_frac + pct_frac) / 2,
-                  "note": f"{fb:,} ratings · {pct:g}%"})
+    sp, snote = seller_points(item, w.get("seller", 0))
+    parts.append({"label": "Seller", "pts": sp, "note": snote})
     for p in parts:
         p["pts"] = round(p["pts"], 1)
     return round(sum(p["pts"] for p in parts), 1), parts
@@ -327,6 +344,7 @@ def summary_item(s: dict, preset: dict) -> dict:
         "seller": seller.get("username", ""),
         "feedback_score": int(seller.get("feedbackScore") or 0),
         "feedback_pct": pct,
+        "top_rated": bool(s.get("topRatedBuyingExperience")),
         "listed": s.get("itemCreationDate") or s.get("itemOriginDate") or "",
         "ends": s.get("itemEndDate") or "",
         "ag": auth["has_authenticity_guarantee"],

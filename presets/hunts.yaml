@@ -26,7 +26,7 @@ defaults:
     unpolished: 10
     polished: -10
     ag: 10
-    seller: 10
+    seller: 20                 # feedback count × rating, + Top Rated Plus
   # Junk that is never the watch itself.
   exclude_common:
     # "Watch and papers only" is the watch, so the "X only" rules skip it.

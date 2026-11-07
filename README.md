@@ -75,7 +75,7 @@ load, so a new preset shows up in the tab's dropdown after the Pi's next
 | `benchmark_low`, `benchmark_high` | Market range. Price points are full at or under `low` and zero at or over `high`. |
 | `deal_floor` | Under this, the card gets "Deal OR suspicious". |
 | `min_card_year`, `max_card_year` | Years accepted as a warranty-card date. |
-| `weights` *(optional)* | Override any of `defaults.weights` for this preset. |
+| `weights` *(optional)* | Override any of `defaults.weights` for this preset. `seller` is feedback count (log scale, 10,000 = full) × rating (97% → 0, 100% → full), plus 15% for Top Rated Plus. |
 
 Anything in `defaults` (category, brand, conditions, warranty years,
 "negotiable?" threshold, cache minutes, how many descriptions to read) can be

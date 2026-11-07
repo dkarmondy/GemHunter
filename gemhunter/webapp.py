@@ -1874,6 +1874,7 @@ function badges(i, p){
   else b.push('<span class="fl dim">No AG</span>');
   var s = i.signals || {};
   if (s.full_set) b.push('<span class="fl good">Full set</span>');
+  if (i.top_rated) b.push('<span class="fl ag">Top Rated Plus</span>');
   if (s.card) b.push('<span class="fl warn">Card ' + (s.card.month ? s.card.month + '/' : '') + s.card.year + '</span>');
   if (s.warranty_months != null) {
     var m = s.warranty_months;
