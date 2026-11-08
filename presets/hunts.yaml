@@ -83,6 +83,7 @@ presets:
     blurb: "Steel, 40mm, 1990–2008"
     queries: ["16600 sea-dweller", "16600 sea dweller", "rolex 16600"]
     require: ['16600']
+    detail_top: 220            # a big market; read every description
     exclude:
       - '16600\d'              # 166000 etc.
       - '16660'
@@ -99,3 +100,27 @@ presets:
     # shown as provenance only.
     min_card_year: 1990
     max_card_year: 2009
+
+  - id: "116600"
+    name: "Sea-Dweller 4000 116600"
+    blurb: "Steel, black ceramic, 40mm, 2014–2017"
+    queries: ["116600", "116600 sea-dweller", "sea-dweller 4000"]
+    # Sellers call both the 16600 and 116600 "Sea-Dweller 4000"; without the
+    # number, only "ceramic" makes it a 116600.
+    require: ['116600|(?=.*ceramic)(?=.*sea.?dweller\s*4000)']
+    exclude:
+      - '1166000'
+      - '126600'               # 43mm red-line successor
+      - '126660'
+      - '116660'               # Deepsea
+      - '\bdeepsea\b'
+      - '\binsert\b'
+    price_min: 8000
+    price_max: 17000
+    benchmark_low: 12000
+    benchmark_high: 15500      # asks cluster $14k–15.7k (Nov 2026)
+    deal_floor: 10500
+    # Made 2014–2017, so any card has run out of its 5 years; the year is
+    # provenance only.
+    min_card_year: 2014
+    max_card_year: 2019

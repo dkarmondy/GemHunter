@@ -18,7 +18,7 @@ It's not a deal-finder or a flipping engine. It's **me, externalized**.
   scored: price vs market, warranty left on the card, full set, unpolished,
   Authenticity Guarantee, seller. Tap the score for the breakdown; "What was
   detected" shows the text each badge came from. First preset: Submariner
-  Date 126610LN; also Sea-Dweller 16600.
+  Date 126610LN; also Sea-Dweller 16600 and 116600.
 - **Rarities digest** — a twice-daily Pushover note when new lots appear,
   leading with IWC and Navitimer.
 
