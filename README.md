@@ -51,6 +51,17 @@ python -m gemhunter.rarities --db data/gemhunter.db --dry-run   # print the dige
 
 Deploying to the Pi: [deploy/DEPLOY.md](deploy/DEPLOY.md).
 
+## Tests
+
+```bash
+.venv/bin/pip install pytest
+.venv/bin/python -m pytest -q
+```
+
+`tests/` pins the parsers (card date, box & papers, polish, bracelet, AG
+class, taste tiers, condition chips) and the Reference Hunt score to real
+listing wording. Add a case there whenever a listing is misread.
+
 ## Docs (the watch knowledge)
 
 See **[docs/README.md](docs/README.md)** for the index: the
@@ -72,9 +83,9 @@ load, so a new preset shows up in the tab's dropdown after the Pi's next
 | `require` | Regexes the **title** must match, e.g. the reference number. |
 | `exclude` | Regexes that drop a listing by title (sister refs, colourways). Added to `defaults.exclude_common` (box only, homage, replica…). |
 | `price_min`, `price_max` | The search's price band, USD. |
-| `benchmark_low`, `benchmark_high` | Market range. Price points are full at or under `low` and zero at or over `high`. |
-| `deal_floor` | Under this, the card gets "Deal OR suspicious". |
-| `min_card_year`, `max_card_year` | Years accepted as a warranty-card date. |
+| `benchmark_low`, `benchmark_high` | Market range. Price points are full at or under `low` and zero at or over `high`. A live auction is scored at the middle of the range until its bid passes it, so an opening bid never looks like a steal. |
+| `deal_floor` | A Buy It Now under this gets "Deal OR suspicious" and no price points until you have looked at it. Auctions are exempt. |
+| `min_card_year`, `max_card_year` | Years accepted as a warranty-card date. A year whose nearest keyword is a service word (serviced, RSC, overhaul) is a service card, not the warranty card, and is ignored. |
 | `bracelet_primary`, `bracelet_cost` | On (Rolex default): a listing on a strap with no bracelet loses half its Condition points, and `bracelet_cost` is added to its price before the market comparison. A strap *plus* the bracelet is fine. Set `bracelet_primary: false` for brands where the bracelet is secondary. |
 | `weights` *(optional)* | Override any of `defaults.weights` for this preset. `seller` is feedback count (log scale, 10,000 = full) × rating (97% → 0, 100% → full), plus 15% for Top Rated Plus. |
 

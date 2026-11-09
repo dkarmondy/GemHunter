@@ -84,6 +84,11 @@ def title_verdict(title: str, preset: dict) -> str:
 CARD_WORDS = re.compile(
     r"(?i)\b(card|warranty|guarantee|papers|purchased|bought|dated|"
     r"sold\s+new|ad\s|authorized\s+dealer)")
+# A service at Rolex (RSC) comes with its own card and a 2-year service
+# warranty. Its date says when the watch was serviced, not when it was sold,
+# so a year whose nearest keyword is one of these is not the warranty card.
+SERVICE_WORDS = re.compile(
+    r"(?i)\b(servic\w*|overhaul\w*|rsc|maintenance|maintained)\b")
 YEAR_RE = re.compile(r"\b(19[89]\d|20[0-3]\d)\b")
 MONTHS = {m: i for i, m in enumerate(
     ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct",
@@ -133,6 +138,25 @@ def _snippet(text: str, start: int, end: int, pad: int = 45) -> str:
     return ("…" if a else "") + s + ("…" if b < len(text) else "")
 
 
+def _is_card_year(text: str, start: int, end: int, reach: int = 60) -> bool:
+    """True if the keyword nearest this year is a sale/card word, not a service one.
+
+    "Card dated 2021, serviced by Rolex 2025 with the service card": 2021 sits
+    next to "dated", 2025 next to "Rolex"/"service", so only 2021 counts.
+    """
+    a = max(0, start - reach)
+    window = text[a:end + reach]
+    best = None   # (distance, is_service)
+    for rx, service in ((CARD_WORDS, False), (SERVICE_WORDS, True)):
+        for k in rx.finditer(window):
+            ks, ke = a + k.start(), a + k.end()
+            dist = start - ke if ke <= start else ks - end if ks >= end else 0
+            # On a tie the service word wins: "service warranty card 2025".
+            if best is None or dist < best[0] or (dist == best[0] and service):
+                best = (dist, service)
+    return best is not None and not best[1]
+
+
 def _card_date(texts: list[tuple[str, str]], preset: dict):
     """(date, approximate?, where, snippet) for the most plausible card date."""
     lo, hi = int(preset.get("min_card_year") or 1990), int(preset.get("max_card_year") or 2100)
@@ -144,8 +168,7 @@ def _card_date(texts: list[tuple[str, str]], preset: dict):
             year = int(m.group(1))
             if not lo <= year <= hi:
                 continue
-            window = text[max(0, m.start() - 60): m.end() + 60]
-            if not CARD_WORDS.search(window):
+            if not _is_card_year(text, m.start(), m.end()):
                 continue
             # A month next to the year sharpens the warranty clock.
             month, approx = 7, True
@@ -325,17 +348,26 @@ def score(item: dict, preset: dict) -> tuple[float, list[dict]]:
     bracelet_cost = float(preset.get("bracelet_cost") or 0) if missing_bracelet else 0.0
     total_price += bracelet_cost
     lo, hi = float(preset["benchmark_low"]), float(preset["benchmark_high"])
-    if total_price <= lo:
+    # A live auction's current bid is not what it will sell for. Until the bid
+    # passes the middle of the market band, price it there: at most half the
+    # price points, never a "steal" for a $3k opening bid.
+    projected = item.get("is_auction") and total_price < (lo + hi) / 2
+    priced_at = (lo + hi) / 2 if projected else total_price
+    if priced_at <= lo:
         frac = 1.0
-    elif total_price >= hi:
+    elif priced_at >= hi:
         frac = 0.0
     else:
-        frac = (hi - total_price) / (hi - lo)
+        frac = (hi - priced_at) / (hi - lo)
     note = f"${total_price:,.0f} vs ${lo:,.0f}–${hi:,.0f}"
     if bracelet_cost:
         note += f" (incl. ${bracelet_cost:,.0f} for a bracelet)"
-    if total_price < float(preset["deal_floor"]):
-        note += " · under the deal floor: deal OR suspicious"
+    if projected:
+        note += f" · auction: scored at the ${priced_at:,.0f} market middle until the bid passes it"
+    elif total_price < float(preset["deal_floor"]):
+        # Too cheap to trust: no price points until a look at it says otherwise.
+        frac = 0.0
+        note += " · under the deal floor: deal OR suspicious, no price points"
     parts.append({"label": "Price vs market", "pts": w.get("price", 0) * frac, "note": note})
 
     sig = item.get("signals") or {}
@@ -542,7 +574,9 @@ def _decorate(item: dict, preset: dict, now: datetime) -> dict:
     it["run_days"] = int((now - listed).total_seconds() // 86400) if listed else None
     it["negotiable"] = (it["run_days"] or 0) >= int(preset.get("negotiable_days") or 30)
     total = it["price"] + (it["shipping"] or 0)
-    it["deal_or_suspicious"] = total < float(preset["deal_floor"])
+    # A low bid on a running auction is normal, not a red flag.
+    it["deal_or_suspicious"] = (not it.get("is_auction")
+                                and total < float(preset["deal_floor"]))
     it["score"], it["breakdown"] = score(it, preset)
     return it
 
