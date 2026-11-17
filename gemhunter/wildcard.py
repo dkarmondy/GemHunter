@@ -550,42 +550,77 @@ def score(item: dict, signals: list[dict], live: int | None, cfg: dict
 # The sweep
 # ---------------------------------------------------------------------------
 
-def _search(client: EbayClient, cfg: dict) -> tuple[dict, list[str], int]:
-    """{item id: (summary, [queries that found it])}, errors, search calls made."""
+MAKER_VIA = "maker: "       # how a followed-maker hit is labelled in `via`
+
+
+def followed_makers(storage: Storage, cfg: dict) -> list[dict]:
+    """The makers each sweep also searches by name: every unblocked maker that
+    has put a card on the tab, hearted ones first, then rarest first.
+
+    Searching a list of unknown makers would be the common road if the list
+    were anyone else's. This one is built here, from listings, and never
+    leaves the database.
+    """
+    makers = [m for m in storage.wildcard_makers()
+              if not m["blocked"] and (m["name"] or "").strip()]
+    makers.sort(key=lambda m: (not m.get("hearted"),
+                               m["live_count"] is None, m["live_count"] or 0))
+    return makers[:int(cfg.get("follow_max") or 0)]
+
+
+def _search(client: EbayClient, cfg: dict, makers: list[dict] | None = None
+            ) -> tuple[dict, list[str], int]:
+    """{item id: (summary, [what found it])}, errors, search calls made."""
     cat = str(cfg.get("category") or "31387")
     pages = int(cfg.get("pages") or 2)
+    floor = float(cfg["price_min"])
     band = [f"price:[{cfg['price_min']}..{cfg['price_max']}]", "priceCurrency:USD"]
     cap = [f"price:[..{cfg['price_max']}]", "priceCurrency:USD"]
+    # (label, keyword, filters, aspect filter, pages, Buy It Now floor)
     jobs = []
     for q in cfg["queries"]:
         extra = ["searchInDescription:true"] if q.get("in_description") else []
-        jobs.append((q["q"], [BUY_NOW] + band + extra))
+        jobs.append((q["q"], q["q"], [BUY_NOW] + band + extra, "", pages, 0.0))
         if q.get("auctions", True):
-            jobs.append((q["q"], [AUCTION] + cap + extra))
+            jobs.append((q["q"], q["q"], [AUCTION] + cap + extra, "", pages, 0.0))
+    for m in makers or []:
+        name = m["name"].strip()
+        # One call per maker: both sale types, the floor applied afterwards.
+        # A maker he has hearted is shown whatever the price.
+        maker_floor = 0.0 if m.get("hearted") else floor
+        if re.search(r"[|,{}:\\]", name):
+            jobs.append((MAKER_VIA + name, f'"{name}"', [ANY_SALE] + cap, "", 1, maker_floor))
+        else:
+            jobs.append((MAKER_VIA + name, "", [ANY_SALE] + cap,
+                         f"categoryId:{cat},Brand:{{{name}}}", 1, maker_floor))
 
     def run(job):
-        query, filters = job
+        label, query, filters, aspect, n, _ = job
         try:
-            return query, client.search_summaries(query, cat, filters, "", pages), None
+            return job, client.search_summaries(query, cat, filters, aspect, n), None
         except Exception as exc:
-            return query, [], f"{query}: {exc}"
+            return job, [], f"{label}: {exc}"
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         results = list(pool.map(run, jobs))
     found: dict[str, tuple[dict, list[str]]] = {}
     errors = []
-    for query, batch, err in results:
+    for job, batch, err in results:
+        label, bin_floor = job[0], job[5]
         if err:
             errors.append(err)
         for s in batch:
             iid = s.get("itemId")
             if not iid:
                 continue
+            if bin_floor and "AUCTION" not in (s.get("buyingOptions") or []) \
+                    and hunt._money(s.get("price")) < bin_floor:
+                continue
             if iid in found:
-                if query not in found[iid][1]:
-                    found[iid][1].append(query)
+                if label not in found[iid][1]:
+                    found[iid][1].append(label)
             else:
-                found[iid] = (s, [query])
+                found[iid] = (s, [label])
     if errors and not found:
         raise RuntimeError("; ".join(errors[:3]))
     return found, errors, len(jobs)
@@ -603,6 +638,7 @@ def build_item(summary: dict, via: list[str], detail: dict, live: int | None,
     blob = (item["title"] + " " + detail.get("text", "")[:1500]).lower()
     item.update({
         "via": via,
+        "followed": any(v.startswith(MAKER_VIA) for v in via),
         "brand": detail.get("brand", ""),
         "brand_live": live,
         "listed": item["listed"] or detail.get("listed", ""),
@@ -627,8 +663,11 @@ def sweep(client: EbayClient, storage: Storage, cfg: dict | None = None,
     """
     cfg = cfg or load_config_file()
     now = now or time.time()
-    found, errors, calls = _search(client, cfg)
+    makers = followed_makers(storage, cfg)
+    hearted_makers = {m["key"] for m in makers if m.get("hearted")}
+    found, errors, calls = _search(client, cfg, makers)
     stats = {"ts": now, "found": len(found), "search_calls": calls,
+             "makers_followed": len(makers),
              "errors": errors, "reasons": {}, "detail_calls": 0,
              "brand_calls": 0, "pending": 0, "shown": 0}
 
@@ -697,7 +736,10 @@ def sweep(client: EbayClient, storage: Storage, cfg: dict | None = None,
         item = None
         if not why:
             item = build_item(summary, via, detail, live, cfg)
-            if item["substance"] < float(cfg.get("min_substance") or 0):
+            # A maker he has hearted is shown whatever the watch has; every
+            # other maker still has to bring something.
+            if item["substance"] < float(cfg.get("min_substance") or 0) \
+                    and key not in hearted_makers:
                 why = "not enough substance"
         if why:
             reject(why)
@@ -723,11 +765,78 @@ def sweep(client: EbayClient, storage: Storage, cfg: dict | None = None,
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Taste: what the hearts and passes have taught. Worked out when the tab is
+# read, not when eBay is swept, so a vote re-ranks the list at once.
+#
+# A card is reduced to features — its maker, each thing it was scored for, and
+# the words of its title. A heart adds to each feature's weight, a pass takes
+# away, so "chronograph", which is on cards of both kinds, ends up near zero
+# and what actually separates the two piles carries the weight.
+# ---------------------------------------------------------------------------
+
+TASTE_STOP = {
+    "watch", "watches", "wristwatch", "mens", "men", "men's", "gents", "with",
+    "and", "the", "for", "from", "swiss", "made", "dial", "case", "steel",
+    "stainless", "automatic", "auto", "vintage", "rare", "box", "papers",
+    "limited", "edition", "new", "used", "pre", "owned", "mint", "nice",
+}
+_TASTE_TOKEN_RE = re.compile(r"[a-zà-ÿ0-9][a-zà-ÿ0-9.'-]{2,}")
+# How much one vote on a card says about each kind of feature.
+TASTE_MAKER, TASTE_SIGNAL, TASTE_WORD = 3.0, 1.0, 0.5
+TASTE_FEATURE_CAP = 3.0     # one feature can only ever count this much
+
+
+def taste_features(item: dict) -> dict[str, float]:
+    """{feature: how much a vote on this card says about it}."""
+    out: dict[str, float] = {}
+    maker = brand_key(item.get("brand", ""))
+    if maker:
+        out["maker " + maker] = TASTE_MAKER
+    for s in item.get("signals") or []:
+        if s["group"] in SUBSTANCE_GROUPS and "edition" not in s:
+            out[s["label"].lower()] = TASTE_SIGNAL
+    maker_words = set(maker.split())
+    for word in _TASTE_TOKEN_RE.findall((item.get("title") or "").lower()):
+        if word not in TASTE_STOP and word not in maker_words and not word.isdigit():
+            out.setdefault("“" + word + "”", TASTE_WORD)
+    return out
+
+
+def taste_weights(voted: list[tuple[dict, int]]) -> dict[str, float]:
+    """Feature weights from (card, +1 heart / -1 pass) pairs."""
+    weights: dict[str, float] = {}
+    for item, vote in voted:
+        for feature, w in taste_features(item).items():
+            weights[feature] = weights.get(feature, 0.0) + vote * w
+    return {f: max(-TASTE_FEATURE_CAP, min(TASTE_FEATURE_CAP, w))
+            for f, w in weights.items() if w}
+
+
+def taste_points(item: dict, weights: dict[str, float], cap: float) -> tuple[float, str]:
+    """(points in [-cap, cap], the features that moved it most)."""
+    hits = [(weights[f], f) for f in taste_features(item) if f in weights]
+    if not hits:
+        return 0.0, "nothing like what you have hearted or passed"
+    pts = max(-cap, min(cap, sum(w for w, _ in hits)))
+    hits.sort(key=lambda h: -abs(h[0]))
+    liked = [f for w, f in hits if w > 0][:3]
+    not_liked = [f for w, f in hits if w < 0][:2]
+    note = "; ".join(x for x in (
+        "like your hearts: " + ", ".join(liked) if liked else "",
+        "like your passes: " + ", ".join(not_liked) if not_liked else "") if x)
+    return round(pts, 1), note
+
+
 def live_cards(storage: Storage, cfg: dict, now: float | None = None) -> dict:
-    """What the tab shows: the last sweep's survivors, best first."""
+    """What the tab shows: the last sweep's survivors, taste applied, best first."""
     now = now or time.time()
     raw = storage.wildcard_meta("last_sweep")
     stats = json.loads(raw) if raw else None
+    voted = [(json.loads(r["payload"]), 1 if r["liked"] else -1)
+             for r in storage.wildcard_voted()]
+    weights = taste_weights(voted)
+    cap = float(cfg.get("taste_max") or 0)
     items, passed = [], []
     if stats:
         new_secs = float(cfg.get("new_hours") or 48) * 3600
@@ -735,10 +844,19 @@ def live_cards(storage: Storage, cfg: dict, now: float | None = None) -> dict:
             item = json.loads(row["payload"])
             item["first_seen"] = row["first_seen"]
             item["is_new"] = now - (row["first_seen"] or 0) < new_secs
+            item["liked"] = bool(row["liked"])
+            item["base_score"] = item["score"]
+            if weights and cap:
+                pts, note = taste_points(item, weights, cap)
+                item["taste"] = pts
+                item["score"] = round(item["score"] + pts, 1)
+                item["breakdown"].append({"label": "Your taste", "pts": pts, "note": note})
             (passed if row["passed"] else items).append(item)
     items.sort(key=lambda i: -i["score"])
     return {"stats": stats, "items": items, "passed": passed,
-            "makers": storage.wildcard_makers()}
+            "makers": storage.wildcard_makers(),
+            "votes": {"hearts": sum(1 for _, v in voted if v > 0),
+                      "passes": sum(1 for _, v in voted if v < 0)}}
 
 
 # ---------------------------------------------------------------------------

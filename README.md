@@ -149,12 +149,29 @@ and take effect on the next sweep.
 
 **It is a monitor, not a search.** These watches surface a few at a time, so
 every sweep is written to SQLite. The tab shows the best of what is live
-right now; **Pass** hides one listing, **I know this maker** removes a maker
-for good. "Makers found so far" at the bottom is the private list of
+right now. "Makers found so far" at the bottom is the private list of
 unknowns this builds up over time.
+
+**It refines itself two ways.**
+
+- **Hearts and passes teach the ranking.** Each card is reduced to its maker,
+  the things it was scored for, and the words of its title. A heart adds
+  weight to each, a pass takes it away, so what is on both piles
+  ("chronograph") cancels out and what separates them carries. Every card
+  then gets a **Your taste** row of up to ±`taste_max` points, naming what
+  moved it. Votes re-rank the tab at once, and keep counting after the
+  listing has sold. Pass also hides the listing; **I know this maker**
+  removes a maker for good.
+- **Found makers are followed.** Every maker that has put a card on the tab
+  is searched *by name* on each later sweep (`follow_max` makers, one call
+  each, hearted makers first, then the rarest). That catches their watches
+  when the title has none of the net's words. They still need
+  `min_substance` and the Buy It Now floor, unless you have hearted one of
+  that maker's watches: then everything of theirs is shown.
 
 Cost per sweep: two searches per query (up to `pages` each, about 140 calls at
 most), one getItem per listing never read before (capped at
-`detail_per_sweep`), one count per maker not measured in `brand_ttl_days`. A
+`detail_per_sweep`), one search per followed maker, one count per maker not
+measured in `brand_ttl_days`. A
 listing's page is read once and kept. The first sweeps work through the
 backlog; after that a sweep is mostly the searches.

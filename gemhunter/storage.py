@@ -37,7 +37,9 @@ CREATE TABLE IF NOT EXISTS wildcard_items (
     detail      TEXT,
     first_seen  REAL,
     last_seen   REAL,
-    passed      INTEGER DEFAULT 0
+    passed      INTEGER DEFAULT 0,
+    liked       INTEGER DEFAULT 0,
+    voted_at    REAL
 );
 
 -- The makers found, and how many live listings eBay had for each when asked.
@@ -78,6 +80,13 @@ class Storage:
             try:
                 self._conn.execute(
                     f"ALTER TABLE rarities_seen ADD COLUMN {col} {decl}")
+            except sqlite3.OperationalError:
+                pass
+        # wildcard_items predates the heart on some databases.
+        for col, decl in [("liked", "INTEGER DEFAULT 0"), ("voted_at", "REAL")]:
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE wildcard_items ADD COLUMN {col} {decl}")
             except sqlite3.OperationalError:
                 pass
 
@@ -189,16 +198,26 @@ class Storage:
     def wildcard_live(self, sweep_ts: float) -> list:
         """The qualifying listings the given sweep saw, passed ones included."""
         return self._conn.execute(
-            """SELECT item_id, payload, first_seen, passed FROM wildcard_items
+            """SELECT item_id, payload, first_seen, passed, liked FROM wildcard_items
                WHERE status = 'ok' AND payload != '' AND last_seen >= ?
                ORDER BY score DESC""", (sweep_ts - 1,)).fetchall()
 
-    def wildcard_set_pass(self, item_id: str, passed: bool) -> bool:
+    def wildcard_set_vote(self, item_id: str, vote: int) -> bool:
+        """+1 heart, -1 pass, 0 clears. The two are exclusive."""
         cur = self._conn.execute(
-            "UPDATE wildcard_items SET passed = ? WHERE item_id = ?",
-            (1 if passed else 0, item_id))
+            """UPDATE wildcard_items SET liked = ?, passed = ?, voted_at = ?
+               WHERE item_id = ?""",
+            (1 if vote > 0 else 0, 1 if vote < 0 else 0, time.time(), item_id))
         self._conn.commit()
         return cur.rowcount > 0
+
+    def wildcard_voted(self, limit: int = 400) -> list:
+        """Every card he has hearted or passed, newest vote first: the
+        training set for the taste row. Sold listings stay in it."""
+        return self._conn.execute(
+            """SELECT payload, liked, passed FROM wildcard_items
+               WHERE (liked = 1 OR passed = 1) AND payload != ''
+               ORDER BY voted_at DESC LIMIT ?""", (limit,)).fetchall()
 
     def wildcard_brand(self, key: str):
         return self._conn.execute(
@@ -242,7 +261,7 @@ class Storage:
             """SELECT b.brand AS key, COALESCE(b.name, i.brand) AS name,
                       b.live_count, COALESCE(b.blocked, 0) AS blocked,
                       COUNT(*) AS listings, MAX(i.score) AS best,
-                      MAX(i.last_seen) AS last_seen
+                      MAX(i.last_seen) AS last_seen, MAX(i.liked) AS hearted
                FROM wildcard_items i
                JOIN wildcard_brands b ON b.brand = lower(trim(i.brand))
                WHERE i.payload != ''

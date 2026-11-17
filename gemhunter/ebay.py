@@ -103,12 +103,14 @@ class EbayClient:
         out: list[dict] = []
         for page in range(max_pages):
             params = {
-                "q": query,
                 "category_ids": category,
                 "sort": "newlyListed",
                 "limit": 200,
                 "offset": page * 200,
             }
+            # Wild Cards follows a maker by Brand aspect alone, with no keyword.
+            if query:
+                params["q"] = query
             if filters:
                 params["filter"] = ",".join(filters)
             if aspect_filter:

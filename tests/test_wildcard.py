@@ -232,12 +232,18 @@ class PretendEbay:
     LIVE = {"Forget": 2, "Helvetia": 60, "Paul Picot": 45}
 
     def __init__(self):
-        self.item_calls, self.count_calls = [], []
+        self.item_calls, self.count_calls, self.maker_searches = [], [], []
 
     def search_summaries(self, query, category, filters, aspect_filter, max_pages):
+        if aspect_filter:           # a followed maker, searched by Brand
+            maker = aspect_filter.split("Brand:{")[1].rstrip("}")
+            self.maker_searches.append(maker)
+            return list(self.BY_MAKER.get(maker, []))
         auction = any("AUCTION}" in f and "FIXED" not in f for f in filters)
         return [s for s in self.HITS.get(query, [])
                 if ("AUCTION" in s["buyingOptions"]) == auction]
+
+    BY_MAKER = {}
 
     def get_item(self, item_id):
         self.item_calls.append(item_id)
@@ -295,12 +301,116 @@ def test_first_sweep_reports_its_finds_as_new_best_first(swept):
 
 def test_pass_hides_a_listing_and_restore_brings_it_back(swept):
     cfg, _, storage, _ = swept
-    storage.wildcard_set_pass("forget", True)
+    storage.wildcard_set_vote("forget", -1)
     live = wildcard.live_cards(storage, cfg, now=1_000_000.0)
     assert [c["id"] for c in live["items"]] == ["picot"]
     assert [c["id"] for c in live["passed"]] == ["forget"]
-    storage.wildcard_set_pass("forget", False)
+    storage.wildcard_set_vote("forget", 0)
     assert len(wildcard.live_cards(storage, cfg, now=1_000_000.0)["items"]) == 2
+
+
+# --- taste: what hearts and passes teach -------------------------------------
+
+def card(brand, title, *labels):
+    return {"brand": brand, "title": title,
+            "signals": [{"group": "complications", "label": l} for l in labels]}
+
+
+def test_a_heart_lifts_what_resembles_it_and_a_pass_sinks_it():
+    loved = card("Forget", "Forget Rattrapante Chronograph", "Split-seconds chronograph", "Chronograph")
+    dull = card("Belvil", "Belvil Regulator Chronograph", "Regulator", "Chronograph")
+    w = wildcard.taste_weights([(loved, 1), (dull, -1)])
+    # On both piles, so it says nothing.
+    assert "chronograph" not in w
+    another = card("Paul Picot", "Paul Picot Rattrapante", "Split-seconds chronograph")
+    pts, note = wildcard.taste_points(another, w, 10)
+    assert pts > 0 and "split-seconds chronograph" in note
+    pts, note = wildcard.taste_points(card("Nivrel", "Nivrel Regulator", "Regulator"), w, 10)
+    assert pts < 0 and "like your passes" in note
+    # The same maker again is the strongest signal of all.
+    same = wildcard.taste_points(card("Forget", "Forget three-hander"), w, 10)[0]
+    assert same >= wildcard.TASTE_MAKER
+
+
+def test_taste_is_capped_and_silent_without_votes():
+    loved = card("Forget", "Forget Rattrapante Perpetual Flyback Guilloche Enamel",
+                 "Split-seconds chronograph", "Perpetual calendar", "Flyback")
+    w = wildcard.taste_weights([(loved, 1)] * 5)
+    assert max(w.values()) == wildcard.TASTE_FEATURE_CAP
+    assert wildcard.taste_points(loved, w, 10)[0] == 10
+    assert wildcard.taste_points(loved, {}, 10)[0] == 0.0
+
+
+def test_hearting_reranks_the_tab_at_once_and_shows_why(swept):
+    cfg, _, storage, _ = swept
+    before = {c["id"]: c for c in wildcard.live_cards(storage, cfg, now=1_000_000.0)["items"]}
+    assert all("taste" not in c for c in before.values())     # no votes, no row
+    storage.wildcard_set_vote("forget", 1)
+    live = wildcard.live_cards(storage, cfg, now=1_000_000.0)
+    after = {c["id"]: c for c in live["items"]}
+    assert live["votes"] == {"hearts": 1, "passes": 0}
+    assert after["forget"]["liked"] is True
+    # The Picot is a split-seconds chronograph too, so the heart lifts it.
+    assert after["picot"]["score"] > before["picot"]["score"]
+    row = after["picot"]["breakdown"][-1]
+    assert row["label"] == "Your taste" and row["pts"] == after["picot"]["taste"]
+    assert after["picot"]["base_score"] == before["picot"]["score"]
+    # Votes never leak into what the sweep stored.
+    assert round(sum(r["pts"] for r in after["picot"]["breakdown"]), 1) == after["picot"]["score"]
+
+
+def test_a_heart_and_a_pass_are_exclusive(swept):
+    cfg, _, storage, _ = swept
+    storage.wildcard_set_vote("forget", 1)
+    storage.wildcard_set_vote("forget", -1)
+    live = wildcard.live_cards(storage, cfg, now=1_000_000.0)
+    assert [c["id"] for c in live["passed"]] == ["forget"]
+    assert live["votes"] == {"hearts": 0, "passes": 1}
+
+
+# --- following the makers already found --------------------------------------
+
+def test_found_makers_are_searched_by_name_on_the_next_sweep(swept):
+    cfg, client, storage, stats = swept
+    assert stats["makers_followed"] == 0 and client.maker_searches == []
+    # A second Forget whose title has none of the net's words.
+    client.BY_MAKER = {"Forget": [summary("forget2", "Forget automatic steel 38mm", 2500)]}
+    client.ITEMS = {**client.ITEMS, "forget2": item(
+        "Forget", "Flyback chronograph with perpetual calendar, one of 50.")}
+    stats = wildcard.sweep(client, storage, cfg, now=1_000_600.0)
+    assert sorted(client.maker_searches) == ["Forget", "Paul Picot"]
+    assert stats["makers_followed"] == 2
+    found = {c["id"]: c for c in wildcard.live_cards(storage, cfg, now=1_000_600.0)["items"]}
+    assert found["forget2"]["via"] == ["maker: Forget"]
+    assert found["forget2"]["followed"] is True
+    assert found["forget"]["followed"] is False
+
+
+def test_a_followed_maker_still_needs_substance_unless_hearted(swept):
+    cfg, client, storage, _ = swept
+    plain = summary("forget3", "Forget automatic steel 38mm", 2500)
+    cheap = summary("forget4", "Forget automatic steel 36mm", 400)
+    client.BY_MAKER = {"Forget": [plain, cheap]}
+    client.ITEMS = {**client.ITEMS, "forget3": item("Forget", "A clean watch."),
+                    "forget4": item("Forget", "A clean watch.")}
+    wildcard.sweep(client, storage, cfg, now=1_000_600.0)
+    ids = lambda t: {c["id"] for c in wildcard.live_cards(storage, cfg, now=t)["items"]}
+    assert not {"forget3", "forget4"} & ids(1_000_600.0)
+    # Heart the maker's watch: now everything of theirs is shown, cheap or plain.
+    storage.wildcard_set_vote("forget", 1)
+    wildcard.sweep(client, storage, cfg, now=1_001_200.0)
+    assert {"forget3", "forget4"} <= ids(1_001_200.0)
+
+
+def test_blocked_makers_are_not_followed_and_follow_max_caps_the_list(swept):
+    cfg, client, storage, _ = swept
+    storage.wildcard_block_brand("paul picot", "Paul Picot", True)
+    assert [m["name"] for m in wildcard.followed_makers(storage, cfg)] == ["Forget"]
+    assert wildcard.followed_makers(storage, {**cfg, "follow_max": 0}) == []
+    storage.wildcard_block_brand("paul picot", "Paul Picot", False)
+    storage.wildcard_set_vote("picot", 1)
+    # A hearted maker goes to the front of the queue, ahead of rarer ones.
+    assert [m["name"] for m in wildcard.followed_makers(storage, {**cfg, "follow_max": 1})] == ["Paul Picot"]
 
 
 def test_blocking_a_maker_removes_it_now_and_on_later_sweeps(swept):

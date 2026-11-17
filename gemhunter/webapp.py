@@ -2123,6 +2123,8 @@ summary{color:#8ba0bd;font-weight:700;cursor:pointer}
 .acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
 .act{font:inherit;font-size:12px;font-weight:700;color:#c9d6e8;text-decoration:none;
  background:#0b1526;border:1px solid #23395c;border-radius:9px;padding:6px 11px}
+.act.on{color:#ff8fa3;border-color:rgba(255,143,163,.6);background:rgba(255,143,163,.12)}
+.bd .neg{color:#ff6b5c}
 .err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
  border-radius:11px;margin-top:16px;font-size:14px}
 .note-box{background:#0f1c30;border:1px solid #1d2f4c;color:#c9d6e8;padding:12px;
@@ -2149,6 +2151,7 @@ summary{color:#8ba0bd;font-weight:700;cursor:pointer}
 <div class="picks">
   <button class="filt on" id="tTop" onclick="setAll(false)">Top 5</button>
   <button class="filt" id="tAll" onclick="setAll(true)">All</button>
+  <button class="filt" id="tHearts" onclick="flipHearts()">&hearts; Hearted</button>
   <button class="filt" id="tIntl" onclick="flipIntl()">International</button>
 </div>
 <div class="status" id="status"></div>
@@ -2160,7 +2163,7 @@ summary{color:#8ba0bd;font-weight:700;cursor:pointer}
           aria-label="Back to top">&uarr;</button>
 </div>
 <script>
-var DATA = null, ALL = false, INTL = true, OPEN = {}, POLL_T = null;
+var DATA = null, ALL = false, INTL = true, HEARTS = false, OPEN = {}, POLL_T = null;
 var CHIP = {complications: 'gold', craft: 'good', movement: 'ag', scarcity: 'warn'};
 
 function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
@@ -2172,6 +2175,7 @@ function setAll(v){ ALL = v;
   document.getElementById('tAll').className = 'filt' + (ALL ? ' on' : '');
   render(); }
 function flipIntl(){ INTL = !INTL; paintIntl(); render(); }
+function flipHearts(){ HEARTS = !HEARTS; render(); }
 function paintIntl(){ document.getElementById('tIntl').className = 'filt' + (INTL ? ' on' : ''); }
 function toggleBd(id){ OPEN[id] = !OPEN[id];
   var el = document.getElementById('bd-' + id); if (el) el.className = 'bd' + (OPEN[id] ? ' on' : ''); }
@@ -2183,7 +2187,8 @@ function post(path, body){
     .then(function(){ load(false); })
     .catch(function(e){ document.getElementById('status').textContent = 'Could not save: ' + e.message; });
 }
-function passItem(el, passed){ post('/api/wildcard/pass', {item_id: el.dataset.id, passed: passed}); }
+// +1 heart, -1 pass, 0 clears either. Tapping a lit heart clears it.
+function vote(el, v){ post('/api/wildcard/vote', {item_id: el.dataset.id, vote: v}); }
 function blockMaker(el, blocked){
   if (blocked && !confirm('Stop showing ' + el.dataset.brand + '? Every listing from this maker leaves the tab.')) return;
   post('/api/wildcard/maker', {brand: el.dataset.brand, blocked: blocked});
@@ -2192,6 +2197,7 @@ function blockMaker(el, blocked){
 function chips(i){
   var b = [];
   if (i.is_new) b.push('<span class="fl gold">NEW</span>');
+  if (i.followed) b.push('<span class="fl ag" title="Found by searching this maker by name, from your private list">Followed maker</span>');
   (i.signals || []).forEach(function(s){
     if (CHIP[s.group]) b.push('<span class="fl ' + CHIP[s.group] + '">' + esc(s.label) + '</span>');
   });
@@ -2212,8 +2218,8 @@ function evidence(i){
 
 function card(i, n){
   var bd = i.breakdown.map(function(x){
-    return '<div><span>' + esc(x.label) + ' <span class="note">· ' + esc(x.note) + '</span></span><b>+'
-      + x.pts + '</b></div>'; }).join('');
+    return '<div><span>' + esc(x.label) + ' <span class="note">· ' + esc(x.note) + '</span></span><b'
+      + (x.pts < 0 ? ' class="neg">' : '>+') + x.pts + '</b></div>'; }).join('');
   var live = i.brand_live == null ? 'live listings not counted'
     : i.brand_live + ' live listing' + (i.brand_live === 1 ? '' : 's') + ' for this maker on eBay';
   var how = i.is_auction ? (i.bids || 0) + ' bids' : (i.buying.indexOf('BEST_OFFER') >= 0 ? 'BIN · offers' : 'BIN');
@@ -2237,7 +2243,10 @@ function card(i, n){
     + '<div class="bd' + (OPEN[i.id] ? ' on' : '') + '" id="bd-' + esc(i.id) + '">' + bd + '</div>'
     + evidence(i)
     + '<div class="acts">'
-    + '<button class="act" data-id="' + esc(i.id) + '" onclick="passItem(this, true)">Pass</button>'
+    + '<button class="act' + (i.liked ? ' on' : '') + '" data-id="' + esc(i.id) + '" onclick="vote(this, '
+    + (i.liked ? 0 : 1) + ')" aria-label="' + (i.liked ? 'Remove heart' : 'Heart this watch') + '">'
+    + (i.liked ? '&hearts; Hearted' : '&#9825; Heart') + '</button>'
+    + '<button class="act" data-id="' + esc(i.id) + '" onclick="vote(this, -1)">Pass</button>'
     + (i.brand ? '<button class="act" data-brand="' + esc(i.brand) + '" onclick="blockMaker(this, true)">I know this maker</button>' : '')
     + '<a class="act" href="/item?id=' + encodeURIComponent(i.id) + '">Inspect &rarr;</a>'
     + '</div></div></div>';
@@ -2248,7 +2257,7 @@ function footer(){
   if (DATA.makers.length) {
     h += '<details class="ex"><summary>Makers found so far (' + DATA.makers.length + ')</summary><ul>'
       + DATA.makers.map(function(m){
-          return '<li>' + (m.blocked ? '<s>' : '<b>') + esc(m.name) + (m.blocked ? '</s>' : '</b>')
+          return '<li>' + (m.hearted ? '&hearts; ' : '') + (m.blocked ? '<s>' : '<b>') + esc(m.name) + (m.blocked ? '</s>' : '</b>')
             + ' &middot; ' + (m.live_count == null ? '?' : m.live_count) + ' live &middot; '
             + m.listings + ' seen &middot; best ' + m.best
             + (m.blocked
@@ -2261,7 +2270,7 @@ function footer(){
     h += '<details class="ex"><summary>Passed (' + DATA.passed.length + ')</summary><ul>'
       + DATA.passed.map(function(p){
           return '<li><a href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.title) + '</a>'
-            + '<button data-id="' + esc(p.id) + '" onclick="passItem(this, false)">restore</button></li>'; }).join('')
+            + '<button data-id="' + esc(p.id) + '" onclick="vote(this, 0)">restore</button></li>'; }).join('')
       + '</ul></details>';
   }
   if (s) {
@@ -2270,6 +2279,7 @@ function footer(){
     h += '<details class="ex"><summary>How the last sweep went</summary><ul>'
       + '<li>' + c.queries + ' attribute searches found ' + s.found.toLocaleString()
       + ' listings up to ' + money(c.price_max) + '</li>'
+      + (s.makers_followed ? '<li>' + s.makers_followed + ' makers from your list searched by name</li>' : '')
       + '<li>' + s.shown + ' survived every gate</li>' + why
       + (s.pending ? '<li>' + s.pending.toLocaleString() + ' not read yet &middot; the next sweeps work through them</li>' : '')
       + '<li>' + (s.search_calls + s.detail_calls + s.brand_calls) + ' eBay calls</li>'
@@ -2285,16 +2295,24 @@ function render(){
   document.getElementById('tTop').textContent = 'Top ' + show;
   var items = DATA.items.filter(function(i){ return INTL || !i.international; });
   document.getElementById('tAll').textContent = 'All (' + items.length + ')';
-  var shown = ALL ? items : items.slice(0, show);
+  var hearted = items.filter(function(i){ return i.liked; });
+  var hb = document.getElementById('tHearts');
+  hb.innerHTML = '&hearts; Hearted (' + hearted.length + ')';
+  hb.className = 'filt' + (HEARTS ? ' on' : '');
+  var shown = HEARTS ? hearted : (ALL ? items : items.slice(0, show));
   var st = [];
   if (DATA.sweeping) st.push('Sweeping eBay… about a minute');
   if (DATA.updated) st.push('Last sweep ' + DATA.updated);
   if (DATA.stats && DATA.stats.pending) st.push(DATA.stats.pending.toLocaleString() + ' listings still to read');
+  var v = DATA.votes || {};
+  if (v.hearts || v.passes) st.push('ranking shaped by ' + (v.hearts || 0) + ' heart' + (v.hearts === 1 ? '' : 's')
+    + ' and ' + (v.passes || 0) + ' pass' + (v.passes === 1 ? '' : 'es'));
   document.getElementById('status').textContent = st.join(' · ');
   var out = '';
   if (DATA.error) out += '<div class="err">Sweep failed: ' + esc(DATA.error) + '</div>';
   if (shown.length) out += shown.map(function(i, n){ return card(i, n + 1); }).join('');
   else if (DATA.sweeping && !DATA.stats) out += '<div class="note-box">First sweep running. Cards appear here when it finishes.</div>';
+  else if (HEARTS) out += '<div class="note-box">Nothing you have hearted is live right now.</div>';
   else if (!DATA.error) out += '<div class="note-box">No wild cards live right now. That is the normal state: these surface a few at a time.</div>';
   document.getElementById('out').innerHTML = out;
   document.getElementById('foot').innerHTML = footer();
@@ -2558,6 +2576,7 @@ class Handler(BaseHTTPRequestHandler):
             "passed": [{"id": i["id"], "title": i["title"], "url": i["url"],
                         "brand": i.get("brand", "")} for i in data["passed"]],
             "makers": data["makers"],
+            "votes": data["votes"],
             "stats": stats,
             "config": data["config"],
         })
@@ -2565,12 +2584,17 @@ class Handler(BaseHTTPRequestHandler):
     def _post_wildcard(self, body: dict) -> None:
         storage = Storage(self.db_path)
         try:
-            if self.path == "/api/wildcard/pass":
+            if self.path == "/api/wildcard/vote":
                 item_id = str(body.get("item_id", ""))
                 if not item_id:
                     self._json(HTTPStatus.BAD_REQUEST, {"error": "missing item_id"})
                     return
-                ok = storage.wildcard_set_pass(item_id, bool(body.get("passed", True)))
+                try:
+                    vote = max(-1, min(1, int(body.get("vote", 0))))
+                except (TypeError, ValueError):
+                    vote = 0
+                # +1 heart, -1 pass, 0 clears. Both teach the taste row.
+                ok = storage.wildcard_set_vote(item_id, vote)
             else:
                 name = str(body.get("brand", "")).strip()[:120]
                 if not name:
@@ -2590,7 +2614,7 @@ class Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
             return
-        if self.path in ("/api/wildcard/pass", "/api/wildcard/maker"):
+        if self.path in ("/api/wildcard/vote", "/api/wildcard/maker"):
             self._post_wildcard(body if isinstance(body, dict) else {})
             return
         item_id = str(body.get("item_id", ""))
