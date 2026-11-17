@@ -19,8 +19,14 @@ It's not a deal-finder or a flipping engine. It's **me, externalized**.
   Authenticity Guarantee, seller. Tap the score for the breakdown; "What was
   detected" shows the text each badge came from. First preset: Submariner
   Date 126610LN; also Sea-Dweller 16600 and 116600.
+- **Wild Cards** (`/wildcard`) — the Top 5 watches nobody is searching for:
+  unknown makers with real substance, found by what the watch *is*
+  (complication, craft, movement, edition size) and never by its name.
+  See [Wild Cards](#wild-cards-how-it-finds-what-cant-be-searched-for).
 - **Rarities digest** — a twice-daily Pushover note when new lots appear,
   leading with IWC and Navitimer.
+- **Wild Cards digest** — four sweeps a day; pushes only when a new find
+  clears `alert_score`.
 
 The original always-on scout (saved searches → scoring → ranked feed + gem
 alerts) was retired on 2026-10-21; it lives in git history before that date.
@@ -47,6 +53,7 @@ cp config.example.yaml config.yaml       # marketplace + ZIP
 cp .env.example .env                      # add eBay keys (+ Pushover for the digest)
 python -m gemhunter.webapp --db data/gemhunter.db          # http://localhost:8080
 python -m gemhunter.rarities --db data/gemhunter.db --dry-run   # print the digest
+python -m gemhunter.wildcard --db data/gemhunter.db --dry-run   # sweep, print the finds
 ```
 
 Deploying to the Pi: [deploy/DEPLOY.md](deploy/DEPLOY.md).
@@ -61,6 +68,8 @@ Deploying to the Pi: [deploy/DEPLOY.md](deploy/DEPLOY.md).
 `tests/` pins the parsers (card date, box & papers, polish, bracelet, AG
 class, taste tiers, condition chips) and the Reference Hunt score to real
 listing wording. Add a case there whenever a listing is misread.
+`tests/test_wildcard.py` runs whole Wild Cards sweeps against a pretend eBay;
+its benchmark listing is the Forget rattrapante, which must come out on top.
 
 ## Docs (the watch knowledge)
 
@@ -98,3 +107,54 @@ to see what each rule threw out.
 Cost: one Browse search per query (two past 200 hits), cached for
 `ttl_minutes`, plus one getItem per listing (up to `detail_top`), cached for the
 life of the process. That fits easily inside eBay's 5,000 calls a day.
+
+## Wild Cards: how it finds what can't be searched for
+
+Searching for "unknown watches" leads down the same road as everyone else.
+So this tab never searches for a watch. It does three things instead, all
+driven by [`presets/wildcard.yaml`](presets/wildcard.yaml):
+
+1. **The net: attributes, not names.** `queries` are searched across the whole
+   Wristwatches category: complications (rattrapante, jump hour, perpetual
+   calendar), craft words *and their misspellings* (guilloché, guiloche,
+   gilloche: a seller who can't spell it doesn't know what they have),
+   movement suppliers (Lemania, Frédéric Piguet, Venus, La Joux-Perret) and
+   edition wording. Buy It Now runs inside `price_min`–`price_max`; auctions
+   have no floor.
+2. **The gate: drop every maker the market knows.** A title naming one of
+   `known_brands` is dropped for free. Everything else is *measured*: eBay is
+   asked how many live Wristwatches listings carry that Brand, and a maker over
+   `known_over` is out whoever they are. `blocked_brands`, `blocked_words`,
+   quartz, ladies, pre-`min_year` and `blocked_countries` follow the hard
+   exclusions in [taste-and-targets.md](docs/taste-and-targets.md).
+3. **The score: substance and obscurity**, out of 100, with the text every
+   point came from ("Why it is here" on each card).
+
+| Factor | Max | What earns it |
+|---|---|---|
+| Complications | 25 | Split-seconds 16, perpetual calendar 16, repeater 16, annual calendar 9, flyback / jump hour 7, chronograph 6, regulator / alarm 5, moonphase 4… |
+| Obscurity | 20 | Full at 3 or fewer live listings for the maker, zero at `known_over`, log scale between. |
+| Craft | 15 | Guilloché, enamel dial, gold rotor 6 each; hand engraved 5; hand made 4; blued hands, chronometer 3… |
+| Scarcity | 12 | Stated run: ≤50 → 12, ≤100 → 10, ≤300 → 8, ≤1000 → 5. Pièce unique 10. Bare "limited edition" 4. |
+| Movement | 10 | Frédéric Piguet 7; Vaucher, Minerva, column-wheel Valjoux 6; Lemania, Venus, micro-rotor 5; 7750 family 2. |
+| Price | 10 | Cheaper inside the band scores more. A live auction gets half: a bid is not a price. |
+| Usability | 8 | Automatic, bracelet, 36–42mm, box & papers 2 each; date, serviced 1. |
+
+A signal found only in the description scores `description_factor` (half) of
+one in the title or item specifics. A listing needs `min_substance` points
+from complications + craft + movement + scarcity to be shown at all, so an
+obscure maker with nothing to it never makes the list. The point tables are
+in `gemhunter/wildcard.py`; the weights, lists and thresholds are in the YAML
+and take effect on the next sweep.
+
+**It is a monitor, not a search.** These watches surface a few at a time, so
+every sweep is written to SQLite. The tab shows the best of what is live
+right now; **Pass** hides one listing, **I know this maker** removes a maker
+for good. "Makers found so far" at the bottom is the private list of
+unknowns this builds up over time.
+
+Cost per sweep: two searches per query (up to `pages` each, about 140 calls at
+most), one getItem per listing never read before (capped at
+`detail_per_sweep`), one count per maker not measured in `brand_ttl_days`. A
+listing's page is read once and kept. The first sweeps work through the
+backlog; after that a sweep is mostly the searches.

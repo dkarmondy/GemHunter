@@ -1,0 +1,14 @@
+[Unit]
+Description=Sweep eBay for Wild Cards
+
+[Timer]
+# A wild card can sit unnoticed for weeks or sell in an afternoon, so four
+# sweeps a day. Each is about a hundred eBay calls, and it only pushes when a
+# listing it has never seen clears alert_score, so most runs are silent. The
+# sweep also leaves the /wildcard tab fresh, so opening it costs no wait.
+OnCalendar=*-*-* 07,12,17,22:00:00
+Persistent=true
+RandomizedDelaySec=600
+
+[Install]
+WantedBy=timers.target

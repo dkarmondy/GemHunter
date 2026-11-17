@@ -121,6 +121,24 @@ class EbayClient:
                 break
         return out
 
+    def count(self, query: str = "", category: str = WRISTWATCH_CATEGORY,
+              filters: list[str] | None = None, aspect_filter: str = "") -> int:
+        """How many live listings match, without fetching them.
+
+        Wild Cards uses this to measure a maker: the number of listings in
+        Wristwatches carrying a given Brand is how well known it is.
+        """
+        params = {"category_ids": category, "limit": 1}
+        if query:
+            params["q"] = query
+        if filters:
+            params["filter"] = ",".join(filters)
+        if aspect_filter:
+            params["aspect_filter"] = aspect_filter
+        resp = requests.get(BROWSE_URL, headers=self._headers(), params=params, timeout=30)
+        resp.raise_for_status()
+        return int(resp.json().get("total") or 0)
+
     def get_item(self, item_id: str) -> dict:
         headers = self._headers()
         resp = requests.get(ITEM_URL + item_id, headers=headers, timeout=30)

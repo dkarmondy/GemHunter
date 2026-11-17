@@ -1,0 +1,274 @@
+# Wild Cards — the /wildcard tab's net, gates and weights.
+#
+# The idea: never search for a watch by name. Search for what a watch *is*
+# (complication, craft, movement, edition size), throw out every maker the
+# market already knows, and measure how unknown the rest are from eBay's own
+# listing counts. See README.md → "Wild Cards".
+#
+# Edits here take effect on the next sweep (tap the refresh button); no
+# restart needed. Names and words are matched case-insensitively as whole
+# words against the listing title.
+
+settings:
+  category: "31387"          # Wristwatches
+  price_min: 1200            # Buy It Now floor, USD. Auctions have no floor:
+                             # real gems open at $1.
+  price_max: 15000
+  home_country: US
+  ttl_hours: 6               # the tab re-sweeps eBay when its data is older
+  pages: 2                   # 200 listings per page, per query, newest first
+  detail_per_sweep: 300      # getItem calls a sweep may spend on new listings
+  brand_ttl_days: 14         # how long a maker's live-listing count is trusted
+  known_over: 400            # a maker with more live listings than this in
+                             # Wristwatches is not a wild card, whoever it is
+  min_substance: 14          # complications + craft + movement + scarcity
+                             # points needed to be shown at all
+  description_factor: 0.5    # a signal found only in the description (not
+                             # the title or item specifics) scores this much
+  show: 5                    # the Top N on the tab
+  alert_score: 55            # the digest pushes new finds at or over this
+  new_hours: 48              # "NEW" badge for this long after first sight
+
+# Max points per factor. Total possible = 100.
+weights:
+  complications: 25
+  obscurity: 20              # few live listings for the maker = more points
+  craft: 15                  # guilloché, enamel, engraving, gold rotor…
+  scarcity: 12               # edition size, pièce unique
+  movement: 10               # the calibre's pedigree
+  price: 10                  # cheaper inside the band = more points
+  usability: 8               # automatic, date, bracelet, 36–42mm, box & papers
+
+# The net. Each line is one eBay keyword search inside Wristwatches, run once
+# for Buy It Now (inside the price band) and once for auctions (no floor).
+#   auctions: false    skip the auction pass (for broad words that drown in $20 lots)
+#   in_description: true    match the description too, not just the title
+queries:
+  # --- complications ---
+  - q: rattrapante
+  - q: split seconds chronograph
+  - q: doppelchronograph
+  - q: perpetual calendar automatic
+  - q: annual calendar automatic
+  - q: minute repeater
+    auctions: false
+  - q: jump hour automatic
+  - q: jumping hour
+  - q: regulator automatic limited
+  - q: flyback chronograph
+  - q: triple calendar moonphase chronograph
+  - q: alarm automatic limited edition
+  # --- craft ---
+  - q: guilloche dial
+  - q: guilloché
+  - q: guiloche            # the sellers who can't spell it don't know what they have
+  - q: guilloshe
+  - q: gilloche
+  - q: engine turned dial automatic
+  - q: enamel dial automatic
+  - q: hand engraved automatic
+  - q: gold rotor
+  - q: 21k rotor
+  - q: 22k rotor
+  - q: blued hands hand made
+  # --- scarcity ---
+  - q: limited edition numbered chronograph automatic
+    auctions: false
+  - q: limited edition swiss automatic numbered
+    auctions: false
+  - q: piece unique
+  - q: independent watchmaker
+  # --- movements: obscure makers bought from the same suppliers as the famous ones ---
+  - q: lemania chronograph
+  - q: frederic piguet
+  - q: venus chronograph
+  - q: la joux-perret
+  - q: jaquet chronograph
+  - q: dubois depraz
+  - q: vaucher
+  - q: column wheel chronograph
+  - q: micro rotor
+
+# Makers everyone already hunts. A title naming one is dropped before it costs
+# an API call. This is only a shortcut: any maker NOT listed here is still
+# measured, and dropped if it has more than `known_over` live listings.
+known_brands:
+  - rolex
+  - tudor
+  - omega
+  - breitling
+  - iwc
+  - cartier
+  - patek
+  - audemars
+  - vacheron
+  - jaeger
+  - lecoultre
+  - jlc
+  - panerai
+  - hublot
+  - tag heuer
+  - heuer
+  - zenith
+  - longines
+  - tissot
+  - hamilton
+  - rado
+  - oris
+  - movado
+  - breguet
+  - blancpain
+  - a. lange
+  - lange & sohne
+  - lange & söhne
+  - glashutte original
+  - glashütte original
+  - chopard
+  - piaget
+  - bvlgari
+  - bulgari
+  - girard perregaux
+  - girard-perregaux
+  - ulysse nardin
+  - bell & ross
+  - montblanc
+  - baume & mercier
+  - baume mercier
+  - raymond weil
+  - maurice lacroix
+  - frederique constant
+  - certina
+  - mido
+  - ebel
+  - concord
+  - corum
+  - franck muller
+  - hermes
+  - hermès
+  - chanel
+  - louis vuitton
+  - gucci
+  - dior
+  - tiffany
+  - richard mille
+  - roger dubuis
+  - harry winston
+  - jacob & co
+  - bremont
+  - nomos
+  - sinn
+  - junghans
+  - doxa
+  - eterna
+  - zodiac
+  - universal geneve
+  - universal genève
+  - wittnauer
+  - benrus
+  - elgin
+  - gruen
+  - waltham
+  - grand seiko
+  - christopher ward
+  - alpina
+  - victorinox
+  - luminox
+  - porsche design
+  - jaquet droz
+  - parmigiani
+  - h. moser
+  - f.p. journe
+  - fp journe
+  - mb&f
+  - de bethune
+  - ressence
+  - urwerk
+
+# Never shown, whatever they score (docs/taste-and-targets.md → Hard exclusions).
+blocked_brands:
+  # Russian
+  - poljot
+  - vostok
+  - raketa
+  - slava
+  - molnija
+  - sturmanskie
+  - buran
+  # Chinese
+  - seagull
+  - sea-gull
+  - beijing
+  - shanghai
+  - sugess
+  - haofa
+  - agelocer
+  - reef tiger
+  - pagani design
+  - san martin
+  - forsining
+  - tevise
+  - cadisen
+  - aesop
+  # Japanese
+  - seiko
+  - citizen
+  - orient
+  - casio
+  - credor
+  # Fashion / mall / shopping-channel
+  - invicta
+  - stuhrling
+  - fossil
+  - michael kors
+  - diesel
+  - guess
+  - armani
+  - daniel wellington
+  - swatch
+  - bulova
+  - timex
+  - kenneth cole
+  - akribos
+  - lucien piccard
+  - jbw
+  - joe rodeo
+  - aqua master
+  - ingersoll
+  - thomas earnshaw
+  - heritor
+  - rougois
+  - croton
+  - technomarine
+  - elini
+  - android
+  - unbranded
+
+blocked_words:
+  - quartz
+  - ladies
+  - lady
+  - women's
+  - womens
+  - pocket watch
+  - smartwatch
+  - smart watch
+  - movement only
+  - dial only
+  - case only
+  - bracelet only
+  - box only
+  - parts lot
+  - lot of
+  - replica
+  - aaa
+  - homage
+  - redial
+  - refinished dial
+  - aftermarket dial
+  - miyota
+  - chinese
+  - tuning fork
+
+# Item-specifics values that rule a listing out once its page has been read.
+blocked_countries: [china, hong kong, russia, russian federation, japan, ussr]
+min_year: 1960               # nothing older: too fragile to service

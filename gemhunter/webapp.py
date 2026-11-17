@@ -22,6 +22,7 @@ import requests
 
 from . import authguard
 from . import hunt
+from . import wildcard
 from .authguard import strip_html as _strip_html
 from .config import load_config
 from .ebay import EbayClient
@@ -575,6 +576,8 @@ APPS = [
      "path": "/rarities", "blurb": "The turnaroundrarities weekly drop, ranked to your taste."},
     {"id": "hunt", "name": "Reference Hunt", "icon": "&#128081;", "where": "local",
      "path": "/hunt", "blurb": "One exact reference across eBay, scored — Sub 126610LN first."},
+    {"id": "wildcard", "name": "Wild Cards", "icon": "&#127183;", "where": "local",
+     "path": "/wildcard", "blurb": "Top 5 unknown makers with real substance, found without naming them."},
     {"id": "search", "name": "Quick search", "icon": "&#9889;", "where": "hub",
      "path": "/search", "blurb": "Live eBay search, any query, newest first."},
     {"id": "lathe", "name": "Lathe outfits", "icon": "&#128296;", "where": "hub",
@@ -1993,6 +1996,334 @@ load(false);
 """
 
 
+# ---------------------------------------------------------------------------
+# Wild Cards: unknown makers with real substance, found by attribute rather
+# than by name (see gemhunter/wildcard.py). A sweep is a hundred-odd eBay
+# calls and takes a minute, so it never runs on the request: the tab is served
+# from what the last sweep left in SQLite, and a stale tab starts the next
+# sweep in the background and polls until it lands. The digest timer writes
+# the same tables, so the tab is usually fresh before it is opened.
+# ---------------------------------------------------------------------------
+
+WILD_RETRY_SECS = 300   # after a failed sweep, don't auto-start another this soon
+
+_wild_lock = threading.Lock()
+_wild_state = {"running": False, "error": "", "failed_at": 0.0}
+
+
+def _start_wild_sweep(db_path: str) -> None:
+    with _wild_lock:
+        if _wild_state["running"]:
+            return
+        _wild_state.update(running=True, error="")
+
+    def work():
+        error = ""
+        try:
+            client = ebay_client()
+            storage = Storage(db_path)
+            try:
+                wildcard.sweep(client, storage, wildcard.load_config_file())
+            finally:
+                storage.close()
+        except requests.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else 0
+            error = f"eBay returned HTTP {code}"
+        except Exception as exc:
+            error = str(exc) or exc.__class__.__name__
+        finally:
+            with _wild_lock:
+                _wild_state.update(running=False, error=error,
+                                   failed_at=time.time() if error else 0.0)
+
+    threading.Thread(target=work, daemon=True).start()
+
+
+def fetch_wildcards(db_path: str, fresh: bool = False) -> dict:
+    cfg = wildcard.load_config_file()
+    storage = Storage(db_path)
+    try:
+        data = wildcard.live_cards(storage, cfg)
+    finally:
+        storage.close()
+    stats = data["stats"]
+    ttl = float(cfg.get("ttl_hours") or 6) * 3600
+    stale = not stats or time.time() - stats["ts"] > ttl
+    with _wild_lock:
+        cooling = time.time() - _wild_state["failed_at"] < WILD_RETRY_SECS
+    if fresh or (stale and not cooling):
+        _start_wild_sweep(db_path)
+    with _wild_lock:
+        data["sweeping"] = _wild_state["running"]
+        data["error"] = _wild_state["error"]
+    data["config"] = wildcard.public_config(cfg)
+    return data
+
+
+WILDCARD_PAGE = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#08111f"><title>Wild Cards</title>
+<style>
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:#08111f;color:#e9eef6;font:16px/1.45 -apple-system,
+ BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;max-width:560px;margin:0 auto;
+ padding:16px 14px calc(84px + env(safe-area-inset-bottom,0px))}
+h1{font-size:20px;margin:4px 0 2px}a{color:#7cc4ff}
+.head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
+.sub{color:#8ba0bd;font-size:13px;margin:0 0 6px}
+.refresh{border:1px solid rgba(148,163,184,.22);background:rgba(15,23,42,.72);
+ color:#e9eef6;width:44px;height:44px;border-radius:14px;font-size:20px;font-weight:800;
+ flex:none;display:grid;place-items:center}
+.refresh:disabled{opacity:.5}
+.status{font-size:12px;color:#8ba0bd;min-height:17px;margin:8px 0}
+.picks{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 2px}
+.filt{font:inherit;font-size:12px;font-weight:700;color:#8ba0bd;
+ background:#0f1c30;border:1px solid #23395c;border-radius:9px;padding:5px 11px}
+.filt.on{color:#7dd3fc;border-color:rgba(125,211,252,.5);background:rgba(125,211,252,.1)}
+.card{background:#0f1c30;border:1px solid #1d2f4c;border-radius:16px;
+ margin-top:14px;overflow:hidden}
+.card.fresh{border-color:rgba(240,214,122,.55)}
+.shot{display:block;width:100%;min-height:200px;background:#0b1526;object-fit:cover}
+.pic{position:relative;display:block}
+.rank{position:absolute;top:9px;left:9px;border-radius:11px;padding:5px 10px;
+ background:rgba(8,17,31,.72);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+ font-size:15px;font-weight:900;color:#e9eef6;line-height:1}
+.score{position:absolute;top:9px;right:9px;border:0;border-radius:13px;
+ background:rgba(8,17,31,.72);backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px);
+ color:#f0d67a;font:inherit;font-size:20px;font-weight:900;padding:6px 11px;line-height:1}
+.score small{display:block;font-size:10px;font-weight:700;color:#8ba0bd;letter-spacing:.4px}
+.info{padding:11px 13px 13px}
+.row{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
+.maker{font-size:20px;font-weight:850;color:#e9eef6;line-height:1.15}
+.live{font-size:12px;font-weight:700;color:#7dd3fc;margin-top:2px}
+.bid{font-size:20px;font-weight:800;color:#f0d67a;text-align:right;white-space:nowrap}
+.bid small{display:block;font-size:11px;font-weight:600;color:#8ba0bd}
+.t{margin:8px 0 0;color:#c9d6e8;font-size:13px;line-height:1.35}
+.meta{margin-top:6px;font-size:12px;color:#8ba0bd}
+.flags{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.fl{font-size:11px;font-weight:800;letter-spacing:.4px;border-radius:7px;
+ padding:3px 8px;border:1px solid}
+.fl.bad{color:#ff5b48;border-color:#ff4d3d;background:rgba(255,77,61,.13)}
+.fl.warn{color:#fbbf24;border-color:rgba(251,191,36,.5);background:rgba(251,191,36,.1)}
+.fl.good{color:#4ade80;border-color:rgba(74,222,128,.45);background:rgba(74,222,128,.1)}
+.fl.ag{color:#d3e1ff;border-color:rgba(54,101,243,.6);background:rgba(54,101,243,.16)}
+.fl.gold{color:#ffe9a3;border-color:#f0d67a;background:rgba(240,214,122,.16)}
+.fl.dim{color:#8ba0bd;border-color:#23395c}
+.bd{display:none;margin-top:10px;padding:9px 11px;background:#0b1526;
+ border-left:3px solid #c9a227;border-radius:0 10px 10px 0;font-size:12px}
+.bd.on{display:block}
+.bd div{display:flex;justify-content:space-between;gap:10px;padding:2px 0}
+.bd b{font-variant-numeric:tabular-nums}
+.bd .note{color:#8ba0bd;font-weight:400}
+details{margin-top:9px;font-size:12px;color:#c9d6e8}
+summary{color:#8ba0bd;font-weight:700;cursor:pointer}
+.ev{margin:5px 0 0;padding:6px 9px;background:#0b1526;border-radius:8px;line-height:1.35}
+.ev em{color:#8ba0bd;font-style:normal;font-size:11px;font-weight:700;margin-right:5px}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.act{font:inherit;font-size:12px;font-weight:700;color:#c9d6e8;text-decoration:none;
+ background:#0b1526;border:1px solid #23395c;border-radius:9px;padding:6px 11px}
+.err{background:#3a1c1c;border:1px solid #6b2f2f;color:#ffc9bd;padding:12px;
+ border-radius:11px;margin-top:16px;font-size:14px}
+.note-box{background:#0f1c30;border:1px solid #1d2f4c;color:#c9d6e8;padding:12px;
+ border-radius:11px;margin-top:16px;font-size:14px}
+.ex{margin-top:20px;color:#8ba0bd}
+.ex li{margin:5px 0}
+.ex button{font:inherit;font-size:11px;font-weight:700;color:#7dd3fc;background:none;
+ border:0;padding:0 0 0 6px}
+.fab{position:fixed;left:12px;z-index:50;display:flex;gap:9px;
+ bottom:calc(14px + env(safe-area-inset-bottom,0px))}
+.fab a,.fab button{width:48px;height:48px;border-radius:50%;padding:0;
+ display:grid;place-items:center;font-size:21px;font-weight:800;
+ color:#e9eef6;text-decoration:none;background:rgba(15,28,48,.92);
+ border:1px solid #23395c;box-shadow:0 8px 22px rgba(0,0,0,.45)}
+</style></head><body>
+<div class="head">
+  <div>
+    <h1><a href="/">&larr;</a> &nbsp;Wild Cards</h1>
+    <p class="sub" id="sub">Unknown makers, real substance. Found by what the watch is, never by its name.</p>
+  </div>
+  <button class="refresh" id="refreshBtn" onclick="load(true)"
+          aria-label="Sweep eBay again">&#8635;</button>
+</div>
+<div class="picks">
+  <button class="filt on" id="tTop" onclick="setAll(false)">Top 5</button>
+  <button class="filt" id="tAll" onclick="setAll(true)">All</button>
+  <button class="filt" id="tIntl" onclick="flipIntl()">International</button>
+</div>
+<div class="status" id="status"></div>
+<div id="out"></div>
+<div id="foot"></div>
+<div class="fab">
+  <a href="/" aria-label="Back to dashboard">&larr;</a>
+  <button type="button" onclick="window.scrollTo({top:0,behavior:'smooth'})"
+          aria-label="Back to top">&uarr;</button>
+</div>
+<script>
+var DATA = null, ALL = false, INTL = true, OPEN = {}, POLL_T = null;
+var CHIP = {complications: 'gold', craft: 'good', movement: 'ag', scarcity: 'warn'};
+
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"]/g,
+  function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function money(v){ return '$' + Math.round(v).toLocaleString(); }
+
+function setAll(v){ ALL = v;
+  document.getElementById('tTop').className = 'filt' + (ALL ? '' : ' on');
+  document.getElementById('tAll').className = 'filt' + (ALL ? ' on' : '');
+  render(); }
+function flipIntl(){ INTL = !INTL; paintIntl(); render(); }
+function paintIntl(){ document.getElementById('tIntl').className = 'filt' + (INTL ? ' on' : ''); }
+function toggleBd(id){ OPEN[id] = !OPEN[id];
+  var el = document.getElementById('bd-' + id); if (el) el.className = 'bd' + (OPEN[id] ? ' on' : ''); }
+
+function post(path, body){
+  return fetch(path, {method: 'POST', headers: {'Content-Type': 'application/json'},
+                      body: JSON.stringify(body)})
+    .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); })
+    .then(function(){ load(false); })
+    .catch(function(e){ document.getElementById('status').textContent = 'Could not save: ' + e.message; });
+}
+function passItem(el, passed){ post('/api/wildcard/pass', {item_id: el.dataset.id, passed: passed}); }
+function blockMaker(el, blocked){
+  if (blocked && !confirm('Stop showing ' + el.dataset.brand + '? Every listing from this maker leaves the tab.')) return;
+  post('/api/wildcard/maker', {brand: el.dataset.brand, blocked: blocked});
+}
+
+function chips(i){
+  var b = [];
+  if (i.is_new) b.push('<span class="fl gold">NEW</span>');
+  (i.signals || []).forEach(function(s){
+    if (CHIP[s.group]) b.push('<span class="fl ' + CHIP[s.group] + '">' + esc(s.label) + '</span>');
+  });
+  if (i.project) b.push('<span class="fl bad" title="For parts, as-is, or needs-work wording">Project</span>');
+  if (i.ag) b.push('<span class="fl ag">Authenticity Guarantee</span>');
+  if (i.international) b.push('<span class="fl dim">' + esc(i.country) + '</span>');
+  return b.join('');
+}
+
+function evidence(i){
+  var rows = (i.signals || []).map(function(s){
+    return '<div class="ev"><em>' + esc(s.label) + ' · ' + esc(s.where) + ' · +' + s.pts
+      + '</em>' + esc(s.snippet) + '</div>'; });
+  if (i.as_is_excerpt) rows.push('<div class="ev"><em>as-is wording</em>' + esc(i.as_is_excerpt) + '</div>');
+  if (!rows.length) return '';
+  return '<details><summary>Why it is here (' + rows.length + ')</summary>' + rows.join('') + '</details>';
+}
+
+function card(i, n){
+  var bd = i.breakdown.map(function(x){
+    return '<div><span>' + esc(x.label) + ' <span class="note">· ' + esc(x.note) + '</span></span><b>+'
+      + x.pts + '</b></div>'; }).join('');
+  var live = i.brand_live == null ? 'live listings not counted'
+    : i.brand_live + ' live listing' + (i.brand_live === 1 ? '' : 's') + ' for this maker on eBay';
+  var how = i.is_auction ? (i.bids || 0) + ' bids' : (i.buying.indexOf('BEST_OFFER') >= 0 ? 'BIN · offers' : 'BIN');
+  var ship = i.shipping == null ? '' : (i.shipping ? ' + ' + money(i.shipping) + ' ship' : ' · free ship');
+  return '<div class="card' + (i.is_new ? ' fresh' : '') + '">'
+    + '<div class="pic"><a href="' + esc(i.url) + '" target="_blank" rel="noopener">'
+    + (i.image ? '<img class="shot" loading="lazy" src="' + esc(i.image) + '" alt="">' : '<div class="shot"></div>')
+    + '</a><div class="rank">#' + n + '</div>'
+    + '<button class="score" data-id="' + esc(i.id) + '" onclick="toggleBd(this.dataset.id)">'
+    + i.score + '<small>SCORE</small></button></div>'
+    + '<div class="info"><div class="row"><div><div class="maker">' + esc(i.brand || 'Unknown maker') + '</div>'
+    + '<div class="live">' + esc(live) + '</div></div>'
+    + '<div class="bid">' + money(i.price) + '<small>' + how + ship + '</small></div></div>'
+    + '<p class="t"><a href="' + esc(i.url) + '" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">' + esc(i.title) + '</a></p>'
+    + '<div class="meta">' + esc(i.condition || 'condition not stated') + ' &middot; ' + esc(i.seller)
+    + ' (' + (i.feedback_score || 0).toLocaleString() + ', ' + i.feedback_pct + '%)'
+    + (i.location ? ' &middot; ' + esc(i.location) : '')
+    + (i.listed ? ' &middot; listed ' + esc(i.listed.slice(0, 10)) : '')
+    + ' &middot; found via: ' + esc((i.via || []).join(', ')) + '</div>'
+    + '<div class="flags">' + chips(i) + '</div>'
+    + '<div class="bd' + (OPEN[i.id] ? ' on' : '') + '" id="bd-' + esc(i.id) + '">' + bd + '</div>'
+    + evidence(i)
+    + '<div class="acts">'
+    + '<button class="act" data-id="' + esc(i.id) + '" onclick="passItem(this, true)">Pass</button>'
+    + (i.brand ? '<button class="act" data-brand="' + esc(i.brand) + '" onclick="blockMaker(this, true)">I know this maker</button>' : '')
+    + '<a class="act" href="/item?id=' + encodeURIComponent(i.id) + '">Inspect &rarr;</a>'
+    + '</div></div></div>';
+}
+
+function footer(){
+  var h = '', s = DATA.stats, c = DATA.config;
+  if (DATA.makers.length) {
+    h += '<details class="ex"><summary>Makers found so far (' + DATA.makers.length + ')</summary><ul>'
+      + DATA.makers.map(function(m){
+          return '<li>' + (m.blocked ? '<s>' : '<b>') + esc(m.name) + (m.blocked ? '</s>' : '</b>')
+            + ' &middot; ' + (m.live_count == null ? '?' : m.live_count) + ' live &middot; '
+            + m.listings + ' seen &middot; best ' + m.best
+            + (m.blocked
+               ? '<button data-brand="' + esc(m.name) + '" onclick="blockMaker(this, false)">show again</button>'
+               : '<button data-brand="' + esc(m.name) + '" onclick="blockMaker(this, true)">I know this maker</button>')
+            + '</li>'; }).join('')
+      + '</ul></details>';
+  }
+  if (DATA.passed.length) {
+    h += '<details class="ex"><summary>Passed (' + DATA.passed.length + ')</summary><ul>'
+      + DATA.passed.map(function(p){
+          return '<li><a href="' + esc(p.url) + '" target="_blank" rel="noopener">' + esc(p.title) + '</a>'
+            + '<button data-id="' + esc(p.id) + '" onclick="passItem(this, false)">restore</button></li>'; }).join('')
+      + '</ul></details>';
+  }
+  if (s) {
+    var why = Object.keys(s.reasons || {}).sort(function(a, b){ return s.reasons[b] - s.reasons[a]; })
+      .map(function(k){ return '<li>' + s.reasons[k].toLocaleString() + ' &middot; ' + esc(k) + '</li>'; }).join('');
+    h += '<details class="ex"><summary>How the last sweep went</summary><ul>'
+      + '<li>' + c.queries + ' attribute searches found ' + s.found.toLocaleString()
+      + ' listings up to ' + money(c.price_max) + '</li>'
+      + '<li>' + s.shown + ' survived every gate</li>' + why
+      + (s.pending ? '<li>' + s.pending.toLocaleString() + ' not read yet &middot; the next sweeps work through them</li>' : '')
+      + '<li>' + (s.search_calls + s.detail_calls + s.brand_calls) + ' eBay calls</li>'
+      + (s.errors || []).map(function(e){ return '<li>failed: ' + esc(e) + '</li>'; }).join('')
+      + '</ul></details>';
+  }
+  return h;
+}
+
+function render(){
+  if (!DATA) return;
+  var show = DATA.config.show || 5;
+  document.getElementById('tTop').textContent = 'Top ' + show;
+  var items = DATA.items.filter(function(i){ return INTL || !i.international; });
+  document.getElementById('tAll').textContent = 'All (' + items.length + ')';
+  var shown = ALL ? items : items.slice(0, show);
+  var st = [];
+  if (DATA.sweeping) st.push('Sweeping eBay… about a minute');
+  if (DATA.updated) st.push('Last sweep ' + DATA.updated);
+  if (DATA.stats && DATA.stats.pending) st.push(DATA.stats.pending.toLocaleString() + ' listings still to read');
+  document.getElementById('status').textContent = st.join(' · ');
+  var out = '';
+  if (DATA.error) out += '<div class="err">Sweep failed: ' + esc(DATA.error) + '</div>';
+  if (shown.length) out += shown.map(function(i, n){ return card(i, n + 1); }).join('');
+  else if (DATA.sweeping && !DATA.stats) out += '<div class="note-box">First sweep running. Cards appear here when it finishes.</div>';
+  else if (!DATA.error) out += '<div class="note-box">No wild cards live right now. That is the normal state: these surface a few at a time.</div>';
+  document.getElementById('out').innerHTML = out;
+  document.getElementById('foot').innerHTML = footer();
+}
+
+function load(fresh){
+  var btn = document.getElementById('refreshBtn');
+  clearTimeout(POLL_T);
+  btn.disabled = true;
+  if (!DATA) document.getElementById('status').textContent = 'Loading…';
+  fetch('/api/wildcard?limit=0' + (fresh ? '&fresh=1' : ''), {cache: 'no-store'})
+    .then(function(r){ return r.json().then(function(d){ if (!r.ok) throw d.error || ('HTTP ' + r.status); return d; }); })
+    .then(function(d){
+      DATA = d; render();
+      // A sweep runs in the background; ask again until it lands.
+      if (d.sweeping) POLL_T = setTimeout(function(){ load(false); }, 5000);
+    })
+    .catch(function(e){
+      document.getElementById('out').innerHTML = '<div class="err">' + esc(e) + '</div>';
+      document.getElementById('status').textContent = 'Load failed.';
+    })
+    .then(function(){ btn.disabled = !!(DATA && DATA.sweeping); });
+}
+paintIntl();
+load(false);
+</script></body></html>
+"""
+
+
 class Handler(BaseHTTPRequestHandler):
     db_path = "gemhunter.db"
 
@@ -2119,6 +2450,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/hunt":
             self._api_hunt(parse_qs(parsed.query))
             return
+        if parsed.path == "/wildcard":
+            self._send(HTTPStatus.OK, WILDCARD_PAGE.encode("utf-8"),
+                       "text/html; charset=utf-8")
+            return
+        if parsed.path == "/api/wildcard":
+            self._api_wildcard(parse_qs(parsed.query))
+            return
         if parsed.path == "/api/item":
             params = parse_qs(parsed.query)
             ref = (params.get("id", [""])[0] or params.get("url", [""])[0])
@@ -2197,12 +2535,63 @@ class Handler(BaseHTTPRequestHandler):
             "items": data["items"],
         })
 
+    def _api_wildcard(self, params: dict) -> None:
+        fresh = params.get("fresh", [""])[0] in ("1", "true", "yes")
+        try:
+            data = fetch_wildcards(self.db_path, fresh)
+        except Exception as exc:
+            self._json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                       {"error": f"presets/wildcard.yaml: {exc}"})
+            return
+        items = data["items"]
+        try:
+            limit = int(params.get("limit", [str(data["config"]["show"] or 5)])[0])
+        except ValueError:
+            limit = 5
+        stats = data["stats"]
+        self._json(HTTPStatus.OK, {
+            "updated": _ts_str(stats["ts"]) if stats else "",
+            "sweeping": data["sweeping"],
+            "error": data["error"],
+            "total": len(items),
+            "items": items[:limit] if limit > 0 else items,
+            "passed": [{"id": i["id"], "title": i["title"], "url": i["url"],
+                        "brand": i.get("brand", "")} for i in data["passed"]],
+            "makers": data["makers"],
+            "stats": stats,
+            "config": data["config"],
+        })
+
+    def _post_wildcard(self, body: dict) -> None:
+        storage = Storage(self.db_path)
+        try:
+            if self.path == "/api/wildcard/pass":
+                item_id = str(body.get("item_id", ""))
+                if not item_id:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "missing item_id"})
+                    return
+                ok = storage.wildcard_set_pass(item_id, bool(body.get("passed", True)))
+            else:
+                name = str(body.get("brand", "")).strip()[:120]
+                if not name:
+                    self._json(HTTPStatus.BAD_REQUEST, {"error": "missing brand"})
+                    return
+                storage.wildcard_block_brand(wildcard.brand_key(name), name,
+                                             bool(body.get("blocked", True)))
+                ok = True
+        finally:
+            storage.close()
+        self._json(HTTPStatus.OK, {"ok": ok})
+
     def do_POST(self) -> None:
         length = int(self.headers.get("Content-Length", "0") or "0")
         try:
             body = json.loads(self.rfile.read(length) or b"{}")
         except json.JSONDecodeError:
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid json"})
+            return
+        if self.path in ("/api/wildcard/pass", "/api/wildcard/maker"):
+            self._post_wildcard(body if isinstance(body, dict) else {})
             return
         item_id = str(body.get("item_id", ""))
         if not item_id:

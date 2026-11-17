@@ -1,0 +1,9 @@
+[Unit]
+Description=Wild Cards sweep and new-find digest
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=dkarm
+WorkingDirectory=/home/dkarm/Projects/GemHunter
+ExecStart=/home/dkarm/Projects/GemHunter/.venv/bin/python -m gemhunter.wildcard --db /home/dkarm/Projects/GemHunter/data/gemhunter.db

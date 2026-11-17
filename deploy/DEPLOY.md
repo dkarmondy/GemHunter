@@ -3,9 +3,12 @@
 Goal: serve the web app (Listing lookup + National Rarities) 24/7 and run the
 Rarities digest twice a day, with the database on the Pi's own storage.
 
-Two units:
+Three units:
 - `gemhunter-web.service` — the web app on port 8080.
 - `gemhunter-rarities.service` + `.timer` — the twice-daily new-drop push.
+- `gemhunter-wildcard.service` + `.timer` — the Wild Cards sweep, four times a
+  day. Optional: without it the `/wildcard` tab sweeps when you open it and
+  its data is over `ttl_hours` old, but nothing is pushed.
 
 ## 1. Get the code on the Pi
 ```bash
@@ -34,10 +37,11 @@ mkdir -p ~/Projects/GemHunter/data
 ## 4. Install the services
 ```bash
 sudo cp deploy/gemhunter-web.service deploy/gemhunter-rarities.service \
-        deploy/gemhunter-rarities.timer /etc/systemd/system/
+        deploy/gemhunter-rarities.timer deploy/gemhunter-wildcard.service \
+        deploy/gemhunter-wildcard.timer /etc/systemd/system/
 # edit the files if your username/paths differ (User=, WorkingDirectory=, ExecStart=)
 sudo systemctl daemon-reload
-sudo systemctl enable --now gemhunter-web gemhunter-rarities.timer
+sudo systemctl enable --now gemhunter-web gemhunter-rarities.timer gemhunter-wildcard.timer
 ```
 
 Check it:
@@ -53,6 +57,15 @@ Then browse to `http://<pi-ip>:8080` from your phone (or over Tailscale — see
 ```bash
 cd ~/Projects/GemHunter && git pull && sudo systemctl restart gemhunter-web
 ```
+
+### Adding Wild Cards to a Pi that is already running
+```bash
+cd ~/Projects/GemHunter && git pull && sudo systemctl restart gemhunter-web
+.venv/bin/python -m gemhunter.wildcard --db data/gemhunter.db --dry-run   # first sweep; prints what it found
+sudo cp deploy/gemhunter-wildcard.service deploy/gemhunter-wildcard.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now gemhunter-wildcard.timer
+```
+The new tables are created in `data/gemhunter.db` on first use; nothing to migrate.
 
 ## Migrating a Pi that ran the old scout off an external SSD
 One time. Stop everything first so the database's WAL is flushed into the file.
