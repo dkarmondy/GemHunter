@@ -141,7 +141,11 @@ driven by [`presets/wildcard.yaml`](presets/wildcard.yaml):
 | Usability | 8 | Automatic, bracelet, 36–42mm, box & papers 2 each; date, serviced 1. |
 
 A signal found only in the description scores `description_factor` (half) of
-one in the title or item specifics. A listing needs `min_substance` points
+one in the title, and one found only in item specifics scores
+`specifics_factor` (half): those are checkboxes, and the first live sweep
+found "Perpetual Calendar" ticked on triple-date 7751s. A complication worth
+9 points or more must be in the seller's own words; a ticked box alone does
+not count. A listing needs `min_substance` points
 from complications + craft + movement + scarcity to be shown at all, so an
 obscure maker with nothing to it never makes the list. The point tables are
 in `gemhunter/wildcard.py`; the weights, lists and thresholds are in the YAML

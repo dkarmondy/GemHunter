@@ -170,7 +170,11 @@ CRAFT = [
      r"|rotor\s+(?:in|of|is)\s+(?:solid\s+)?(?:\d{2}\s*k\w*\.?\s+)?gold"),
     ("Hand engraved", 5,
      r"hand[\s-]*engrav\w+|engraved\s+by\s+hand|engraved\s+(?:movement|rotor|dial)"),
-    ("Hand made", 4, r"hand[\s-]*(?:made|crafted|finished|built)\b"),
+    # Not the strap, the box or the buckle: "handmade leather strap" is on
+    # half of eBay.
+    ("Hand made", 4,
+     r"hand[\s-]*(?:made|crafted|finished|built)\b"
+     r"(?!\s+(?:\w+\s+){0,2}(?:strap|band|bracelet|leather|box|buckle|pouch))"),
     ("Blued hands", 3,
      r"blued?\s+(?:steel\s+)?hands|(?:heat|flame|hand)[\s-]*blued"),
     ("Movement finishing", 3,
@@ -311,8 +315,25 @@ def _negated(text: str, start: int) -> bool:
     return bool(_NEGATED_RE.search(text[max(0, start - 30):start]))
 
 
+# Item specifics are checkboxes, and sellers tick them carelessly. Seen on the
+# first live sweep: "Handmade: No" on a Hanhart, and "Perpetual Calendar"
+# ticked under Features on a triple-date ETA 7751.
+_ASPECT_NO = {"no", "none", "n/a", "na", "unknown", "does not apply",
+              "not applicable", "not specified"}
+_ASPECT_SKIP_RE = re.compile(r"(?i)^handmade$")
+# A complication worth this much has to be claimed in the seller's own words
+# (title or description); a ticked Features box alone does not count.
+HEADLINE_PTS = 9
+# Words that mean something else in a description: the regulator on a balance
+# cock, the brand history that mentions a tourbillon, an alarm clock in the lot.
+NOT_FROM_DESCRIPTION = {"Regulator", "Tourbillon", "Alarm", "Repeater"}
+
+
 def _aspect_text(aspects: dict) -> str:
-    return " · ".join(f"{k}: {v}" for k, v in (aspects or {}).items() if k and v)
+    return " · ".join(
+        f"{k}: {v}" for k, v in (aspects or {}).items()
+        if k and v and not _ASPECT_SKIP_RE.search(str(k))
+        and str(v).strip().lower() not in _ASPECT_NO)
 
 
 def _aspect(aspects: dict, pattern: str) -> str:
@@ -329,18 +350,26 @@ def parse_substance(title: str, description: str, aspects: dict, cfg: dict) -> l
              ("description", description or "")]
     everything = "\n".join(t for _, t in texts)
     desc_factor = float(cfg.get("description_factor", 0.5))
+    factor = {"title": 1.0, "description": desc_factor,
+              "item specifics": float(cfg.get("specifics_factor", 0.5))}
     out: list[dict] = []
     for group, table in GROUPS.items():
         for label, pts, rx, needs in table:
             if needs and not needs.search(everything):
                 continue
             for where, text in texts:
+                if where == "item specifics" and group != "usability" and pts >= HEADLINE_PTS:
+                    continue
+                if where == "description" and label in NOT_FROM_DESCRIPTION:
+                    continue
                 m = next((m for m in rx.finditer(text)
                           if not _negated(text, m.start())), None)
                 if m:
                     out.append({
                         "group": group, "label": label, "where": where,
-                        "pts": round(pts * (desc_factor if where == "description" else 1), 1),
+                        # Usability is plain fact (automatic, date): full
+                        # points wherever it is stated.
+                        "pts": round(pts * (1.0 if group == "usability" else factor[where]), 1),
                         "snippet": hunt._snippet(text, m.start(), m.end()),
                     })
                     break

@@ -145,6 +145,45 @@ def test_negated_signals_do_not_count(cfg):
     assert {"Guilloché", "Blued hands"} <= labels(sig)
 
 
+# --- what the first live sweep got wrong (2026-11-16) -------------------------
+
+def test_a_handmade_checkbox_is_not_craft(cfg):
+    for value in ("No", "Yes"):
+        sig = wildcard.parse_substance("Hanhart Pioneer flyback", "", {"Handmade": value}, cfg)
+        assert "Hand made" not in labels(sig), value
+
+
+def test_handmade_strap_is_not_a_handmade_watch(cfg):
+    sig = wildcard.parse_substance(
+        "Swiss regulator", "Comes on the original handmade leather strap.", {}, cfg)
+    assert "Hand made" not in labels(sig)
+    sig = wildcard.parse_substance("Swiss automatic", "Entirely hand made dial.", {}, cfg)
+    assert "Hand made" in labels(sig)
+
+
+def test_a_ticked_features_box_cannot_claim_a_big_complication(cfg):
+    # A triple-date ETA 7751 whose seller ticked every calendar box.
+    sig = wildcard.parse_substance(
+        "DiBur Moonphase Triple Date Chronograph ETA 7751", "",
+        {"Features": "Annual Calendar, Perpetual Calendar, Moon Phase, Alarm"}, cfg)
+    assert not {"Perpetual calendar", "Annual calendar"} & labels(sig)
+    # A small one still counts from the box, at specifics_factor.
+    alarm = next(s for s in sig if s["label"] == "Alarm")
+    assert alarm["where"] == "item specifics" and alarm["pts"] == 5 * cfg["specifics_factor"]
+    # Said in the title, it is believed.
+    sig = wildcard.parse_substance("Gerald Genta Perpetual Calendar Moonphase", "", {}, cfg)
+    assert "Perpetual calendar" in labels(sig)
+
+
+@pytest.mark.parametrize("desc", [
+    "Whether a double rotor or a tourbillon, the Swiss brand offers a rich choice.",
+    "The column wheel stands above it and the regulator is lettered A and R.",
+])
+def test_brand_blurbs_and_movement_parts_are_not_complications(cfg, desc):
+    sig = wildcard.parse_substance("Swiss chronograph automatic", desc, {}, cfg)
+    assert not {"Tourbillon", "Regulator"} & labels(sig)
+
+
 def test_a_stated_run_replaces_the_bare_words(cfg):
     sig = wildcard.parse_substance("Limited edition 12/100 chronograph", "", {}, cfg)
     assert labels(sig, "scarcity") == {"Edition of 100"}
